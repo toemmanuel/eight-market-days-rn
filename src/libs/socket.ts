@@ -1,14 +1,19 @@
 import { io, Socket as IOSocket } from 'socket.io-client';
-import RNCallKeep from 'react-native-callkeep';
 import { InitiateCallPayload, WebRTCSignalPayload } from '../types';
+import type { NavigationProp } from '@react-navigation/native';
 import { Platform } from 'react-native';
-import { call } from './call';
+import { call, callKeep } from './call';
 import { webRtc } from './web-rtc';
 
 class SocketService {
   socket: IOSocket;
 
-  navigate: any = null;
+  navigation: Omit<
+    NavigationProp<ReactNavigation.RootParamList>,
+    'getState'
+  > | null = null;
+
+  currentRoute: string | undefined = undefined;
 
   platform = Platform;
   url =
@@ -37,18 +42,29 @@ class SocketService {
     this.socket.on('call:accepted', (data: { callId: string }) => {
       console.log('Accepted Call:', data);
       call.setActiveCall(data.callId);
-
-      // this.navigate('Caller', data);
     });
 
     this.socket.on('connect_error', error => {
       console.log('🚨 Connection Error:', error.message);
     });
 
-    this.socket.on('call:end', (data: { callId: string }) => {
+    this.socket.on('call:ended', (data: { callId: string; reason: string }) => {
       console.log('End call');
-      call.endCall(data.callId);
+      call.endCall(data.callId, data.reason);
+      if (this.navigation?.canGoBack()) this.navigation?.goBack();
     });
+
+    this.socket.on(
+      'call:timeout',
+      (data: { callId: string; reason: string }) => {
+        console.log('Call timeout');
+        webRtc.endCall(data.callId);
+        callKeep.endCall(data.callId);
+        if (this.currentRoute === 'Callee' || this.currentRoute === 'Caller')
+          if (this.navigation?.canGoBack()) this.navigation?.goBack();
+      },
+    );
+
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
       await webRtc.handleSignal(payload);
     });
@@ -62,16 +78,22 @@ class SocketService {
   // call:initiate
   initiateCall(data: InitiateCallPayload) {
     this.socket.emit('call:initiate', data);
+    this.navigation?.navigate('Caller', data);
   }
 
   // backend: call:accept
   acceptCall(data: { callId: string }) {
     this.socket.emit('call:accept', data);
+    this.navigation?.navigate('Callee', data);
   }
 
   // backend: call:end
-  endCall(callId: string) {
-    this.socket.emit('call:end', { callId });
+  endCall(callId: string, reason: string = 'ended') {
+    this.socket.emit('call:end', { callId, reason });
+    // if (this.currentRoute === 'Callee' || this.currentRoute === 'Caller') {
+    //   this.navigation?.goBack();
+    // }
+    // this.navigation?.goBack();
   }
 
   // backend: webrtc:signal

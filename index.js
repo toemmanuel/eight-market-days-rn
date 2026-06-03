@@ -34,8 +34,6 @@ setBackgroundMessageHandler(messaging, notification.onMessage);
 //   const { notification, data, messageId } = remoteMessage;
 //   const isInComingCall = data.type === 'incoming_call';
 
-//   console.log('Remote Data::', data);
-
 //   if (isInComingCall) {
 //     callKeep.displayIncomingCall(data.callerId, data.callerName);
 

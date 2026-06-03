@@ -6,16 +6,17 @@ import {
   StyleSheet,
 } from 'react-native';
 import React, { useEffect } from 'react';
-import { socket, webRtc } from '../libs';
+import { call, callKeep, socket, webRtc } from '../libs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { IIncomingCallData } from '../types';
 
 export default function CallScreen() {
   const safeAreaInsets = useSafeAreaInsets();
+  const { goBack } = useNavigation();
   const { params } = useRoute();
 
-  const callData = (params as any)?.callData as IIncomingCallData;
+  const callData = params as any as IIncomingCallData;
 
   const id = callData?.callId;
 
@@ -25,9 +26,16 @@ export default function CallScreen() {
     }
   });
 
+  const onEndCall = () => {
+    call.endCall(callData?.callId as string);
+    goBack();
+  };
+
   useEffect(() => {
     // webRtc.init();
     // webRtc.startLocalStream();
+    callKeep.currentRoute = 'Caller';
+    socket.currentRoute = 'Caller';
   }, []);
 
   return (
@@ -41,7 +49,7 @@ export default function CallScreen() {
       ]}
     >
       <Text>In Call...</Text>
-      <TouchableOpacity style={styles.endCall}>
+      <TouchableOpacity onPress={onEndCall} style={styles.endCall}>
         <Text>End Call</Text>
       </TouchableOpacity>
     </View>

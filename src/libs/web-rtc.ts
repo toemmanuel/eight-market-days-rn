@@ -183,9 +183,15 @@ class WebRTCService {
 
     pc?.close();
 
+    const stream = this.getLocalStream(callId);
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop()); // CRITICAL!
+    }
+    this.localStreams.delete(callId);
+
     this.peers.delete(callId);
     this.streams.delete(callId);
-    this.localStreams.delete(callId);
+    // this.localStreams.delete(callId);
   }
 }
 

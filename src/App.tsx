@@ -9,7 +9,7 @@ import { useEffect } from 'react';
 import { StatusBar, useColorScheme } from 'react-native';
 import notifee, { EventType } from '@notifee/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { call, notification, socket } from './libs';
+import { call, callKeep, notification, socket } from './libs';
 import {
   createNavigationContainerRef,
   NavigationContainer,
@@ -17,42 +17,46 @@ import {
 } from '@react-navigation/native';
 import { RootNavigator } from './navigator';
 
+const linking = {
+  prefixes: ['eightmarkeydays://'],
+};
+
 function App() {
   const isDarkMode = useColorScheme() === 'dark';
 
   const navigationRef = createNavigationContainerRef();
 
-  notifee.onForegroundEvent(({ type, detail }) => {
-    if (type === EventType.ACTION_PRESS) {
-      const { pressAction, notification } = detail;
-      const data = notification?.data;
+  // notifee.onForegroundEvent(({ type, detail }) => {
+  //   if (type === EventType.ACTION_PRESS) {
+  //     const { pressAction, notification } = detail;
+  //     const data = notification?.data;
 
-      console.log('Data::', data);
-      console.log('Notification::', notification);
+  //     console.log('Data::', data);
+  //     console.log('Notification::', notification);
 
-      if (pressAction?.id === 'answer') {
-        socket.acceptCall({ callId: data?.callId as string });
+  //     if (pressAction?.id === 'answer') {
+  //       socket.acceptCall({ callId: data?.callId as string });
 
-        // open call screen
-        navigationRef.navigate('Callee', {
-          callData: data,
-        });
+  //       // open call screen
+  //       navigationRef.navigate('Callee', {
+  //         callData: data,
+  //       });
 
-        notifee.cancelNotification(notification?.id as string);
-      }
+  //       notifee.cancelNotification(notification?.id as string);
+  //     }
 
-      if (pressAction?.id === 'decline') {
-        console.log('Call declined');
+  //     if (pressAction?.id === 'decline') {
+  //       console.log('Call declined');
 
-        socket.endCall(data?.callId as string);
+  //       socket.endCall(data?.callId as string);
 
-        notifee.cancelNotification(notification?.id as string);
-      }
-    }
-  });
+  //       notification.cancelNotification(notification?.id as string);
+  //     }
+  //   }
+  // });
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer linking={linking} ref={navigationRef}>
       <SafeAreaProvider>
         <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
         <AppContent />
@@ -62,7 +66,7 @@ function App() {
 }
 
 function AppContent() {
-  const { navigate } = useNavigation();
+  const navigation = useNavigation();
   const requestNotificationAndStoreToken = async () => {
     try {
       const fcmToken = await notification.requestPermission();
@@ -73,9 +77,10 @@ function AppContent() {
   };
 
   useEffect(() => {
-    socket.navigate = navigate as any;
+    socket.navigation = navigation;
     setTimeout(async () => {
-      call.init();
+      await call.init();
+      callKeep.navigation = navigation as any;
       await requestNotificationAndStoreToken();
     }, 1000);
   }, []);
