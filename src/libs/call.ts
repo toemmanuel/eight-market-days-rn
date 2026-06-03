@@ -206,11 +206,11 @@ class CallKeep {
         actions: [
           {
             title: 'Decline',
-            pressAction: { id: 'decline' },
+            pressAction: { id: 'decline', launchActivity: 'default' },
           },
           {
             title: 'Answer',
-            pressAction: { id: 'answer' },
+            pressAction: { id: 'answer', launchActivity: 'default' },
           },
         ],
       },
