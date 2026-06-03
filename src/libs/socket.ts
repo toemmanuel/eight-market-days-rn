@@ -47,6 +47,7 @@ class SocketService {
 
     this.socket.on('call:end', (data: { callId: string }) => {
       console.log('End call');
+      call.endCall(data.callId);
     });
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
       await webRtc.handleSignal(payload);
