@@ -1,197 +1,379 @@
 import {
   RTCPeerConnection,
-  mediaDevices,
-  MediaStream,
   RTCSessionDescription,
   RTCIceCandidate,
+  mediaDevices,
+  MediaStream,
 } from 'react-native-webrtc';
 
-import { IIncomingCallData, WebRTCSignalPayload } from '../types';
+import InCallManager from 'react-native-incall-manager';
 import { socket } from './socket';
+import { CallType, WebRTCSignalPayload } from '../types';
 
 const configuration = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
 };
 
-let mediaConstraints = {
-  audio: true,
-  video: {
-    frameRate: 30,
-    facingMode: 'user',
-  },
-};
+enum CallState {
+  IDLE = 'idle',
+  CALLING = 'calling',
+  RINGING = 'ringing',
+  CONNECTING = 'connecting',
+  CONNECTED = 'connected',
+  FAILED = 'failed',
+  ENDED = 'ended',
+}
 
-class WebRTCService {
-  private peers: Map<string, RTCPeerConnection> = new Map();
-  private pc: RTCPeerConnection | null = null;
-  callData: IIncomingCallData | null = null;
+export class WebRTCService {
+  private peerConnection: RTCPeerConnection | null = null;
+  private localStream: MediaStream | null = null;
+  private remoteStream: MediaStream | null = null;
 
-  private streams: Map<string, MediaStream> = new Map();
+  currentCallId: string | null = null;
+  private currentPeerId: string | null = null;
 
-  private localStreams: Map<string, MediaStream> = new Map();
+  private myUserId: string | null = null;
 
-  init() {
-    const pc = new RTCPeerConnection(configuration);
-    pc.addEventListener('connectionstatechange', (event: any) => {
-      switch (this.pc?.connectionState) {
-        case 'closed':
-          // You can handle the call being disconnected here.
+  private callType: CallType = 'audio';
+  private callState: CallState = CallState.IDLE;
 
-          break;
-      }
-    });
+  private lastProcessedAnswer = '';
 
-    pc.addEventListener('track', event => {
-      // Grab the remote track from the connected participant.
+  private processedSignals = new Set<string>();
 
-      this.streams.set(this.callData?.callId || '', event.streams[0]);
-    });
+  private pendingCandidates: RTCIceCandidate[] = [];
+
+  private onRemoteStream: ((stream: MediaStream) => void) | null = null;
+  private onStateChange: ((state: CallState) => void) | null = null;
+
+  setOnRemoteStream(cb: (stream: MediaStream) => void) {
+    this.onRemoteStream = cb;
   }
 
-  private getPeer(callId: string, calleeId?: string) {
-    let pc = this.peers.get(callId);
-
-    if (!pc) {
-      pc = new RTCPeerConnection(configuration);
-
-      this.registerPeerEvents(callId, pc, calleeId);
-
-      this.peers.set(callId, pc);
-    }
-
-    this.pc = pc;
-
-    return pc;
+  setOnStateChange(cb: (state: CallState) => void) {
+    this.onStateChange = cb;
   }
 
-  private registerPeerEvents(
-    callId: string,
-    pc: RTCPeerConnection,
-    calleeId?: string,
-  ) {
-    // ICE candidates
-    pc.onicecandidate = event => {
-      if (event.candidate) {
-        socket.sendSignal({
-          to: calleeId || '',
-          callId,
-          type: 'candidate',
-          candidate: event.candidate,
-        });
-      }
-    };
-
-    // Remote stream
-    pc.ontrack = event => {
-      this.streams.set(callId, event.streams[0]);
-    };
+  private setState(state: CallState) {
+    this.callState = state;
+    this.onStateChange?.(state);
   }
 
-  async handleSignal(payload: WebRTCSignalPayload) {
-    const { callId, type, to } = payload;
-
-    switch (type) {
-      case 'offer':
-        await this.handleOffer(callId, to, payload.sdp);
-        break;
-
-      case 'answer':
-        await this.handleAnswer(callId, payload.sdp);
-        break;
-
-      case 'candidate':
-        await this.handleCandidate(callId, payload.candidate);
-        break;
-    }
+  private log(...args: any[]) {
+    if (__DEV__) console.log('[WebRTC]', ...args);
   }
 
-  async startCall(callId: string, calleeId: string) {
-    const pc = this.getPeer(callId, calleeId);
-
-    const stream = await mediaDevices.getUserMedia(mediaConstraints);
-
-    this.localStreams.set(callId, stream);
-
-    stream.getTracks().forEach(track => {
-      pc.addTrack(track, stream);
-    });
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    socket.sendSignal({
-      to: calleeId,
-      callId,
-      type: 'offer',
-      sdp: offer,
-    });
-  }
-
-  async handleOffer(callId: string, offerTo: string, sdp: any) {
-    const pc = this.getPeer(callId);
+  private async createLocalStream() {
+    if (this.localStream) return this.localStream;
 
     const stream = await mediaDevices.getUserMedia({
       audio: true,
       video: true,
     });
 
-    this.localStreams.set(callId, stream);
+    if (this.callType === 'audio') {
+      stream.getVideoTracks().forEach(t => (t.enabled = false));
+    }
 
-    stream.getTracks().forEach(track => {
-      pc.addTrack(track, stream);
+    this.localStream = stream;
+    return stream;
+  }
+
+  public getLocalStream() {
+    return this.localStream;
+  }
+
+  public getRemoteStream() {
+    return this.remoteStream;
+  }
+
+  private createPeer(peerId: string, callId: string) {
+    if (this.peerConnection && this.currentCallId === callId) {
+      this.log('Peer already exists for this call');
+      return this.peerConnection;
+    }
+
+    if (this.peerConnection) {
+      this.log('Closing existing peerConnection before creating new one');
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
+
+    const pc = new RTCPeerConnection(configuration);
+
+    this.currentPeerId = peerId;
+    this.currentCallId = callId;
+
+    // add tracks ONCE
+    this.localStream?.getTracks().forEach(track => {
+      const hasTrack = pc.getSenders().some(sender => sender.track === track);
+      if (!hasTrack) {
+        pc.addTrack(track, this.localStream!);
+      }
     });
 
-    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    pc.onicecandidate = event => {
+      if (!event.candidate) return;
 
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+      socket.sendSignal({
+        to: peerId,
+        from: this.getMyUserId(),
+        callId,
+        type: 'candidate',
+        candidate: event.candidate,
+      });
+    };
 
-    socket.sendSignal({
-      to: offerTo,
-      callId,
-      type: 'answer',
-      sdp: answer,
+    pc.ontrack = event => {
+      const [stream] = event.streams;
+      if (!stream) return;
+
+      this.remoteStream = stream;
+      this.onRemoteStream?.(stream);
+    };
+
+    pc.onconnectionstatechange = () => {
+      this.log('Connection:', pc.connectionState);
+
+      if (pc.connectionState === 'connected') {
+        this.setState(CallState.CONNECTED);
+      }
+
+      if (pc.connectionState === 'failed') {
+        this.setState(CallState.FAILED);
+        this.safeCleanup();
+      }
+
+      if (pc.connectionState === 'closed') {
+        this.setState(CallState.ENDED);
+      }
+    };
+
+    this.peerConnection = pc;
+    return pc;
+  }
+
+  async startCall(callId: string, calleeId: string, type: CallType) {
+    try {
+      if (this.peerConnection) this.safeCleanup();
+
+      this.callType = type;
+      this.setState(CallState.CALLING);
+
+      InCallManager.start({ media: 'audio' });
+
+      await this.createLocalStream();
+
+      const pc = this.createPeer(calleeId, callId);
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      console.log('CALL_PAYLOAD::', {
+        to: calleeId,
+        from: this.getMyUserId(),
+        callId,
+        type: 'offer',
+        sdp: offer,
+      });
+
+      socket.sendSignal({
+        to: calleeId,
+        from: this.getMyUserId(),
+        callId,
+        type: 'offer',
+        sdp: offer,
+      });
+
+      return true;
+    } catch (e) {
+      console.error(e);
+      this.safeCleanup();
+      return false;
+    }
+  }
+
+  async handleSignal(payload: WebRTCSignalPayload) {
+    const { callId, type, sdp, from } = payload;
+
+    if (from === this.myUserId) {
+      this.log('Ignoring signal from self');
+      return;
+    }
+
+    const signalKey = `${callId}-${type}-${sdp?.sdp?.substring(0, 50)}`;
+    if (this.processedSignals.has(signalKey)) {
+      this.log('Ignoring duplicate signal');
+      return;
+    }
+    this.processedSignals.add(signalKey);
+
+    // Clear old keys after 5 seconds
+    setTimeout(() => this.processedSignals.delete(signalKey), 5000);
+
+    if (this.currentCallId && this.currentCallId !== callId) {
+      return; // ignore old calls
+    }
+
+    switch (type) {
+      case 'offer':
+        return this.handleOffer(callId, from!, payload.sdp, this.callType);
+
+      case 'answer':
+        return this.handleAnswer(callId, payload.sdp);
+
+      case 'candidate':
+        return this.handleCandidate(callId, payload.candidate);
+    }
+  }
+
+  async onCallAccepted(callId: string, peerId: string) {
+    this.currentCallId = callId;
+    this.currentPeerId = peerId;
+
+    InCallManager.start({
+      media: this.callType === 'audio' ? 'audio' : 'video',
     });
+
+    this.setState(CallState.CONNECTING);
+  }
+
+  async handleOffer(callId: string, to: string, sdp: any, type: CallType) {
+    try {
+      this.callType = type;
+      this.setState(CallState.RINGING);
+
+      InCallManager.start({ media: 'audio' });
+
+      await this.createLocalStream();
+
+      const pc = this.createPeer(to, callId);
+
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+      await this.flushCandidates();
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      console.log('FROM::', this.getMyUserId());
+      console.log('TO::', to);
+
+      socket.sendSignal({
+        to: to,
+        from: this.getMyUserId(),
+        callId,
+        type: 'answer',
+        sdp: answer,
+      });
+
+      return true;
+    } catch (e) {
+      console.error(e);
+      this.safeCleanup();
+      return false;
+    }
   }
 
   async handleAnswer(callId: string, sdp: any) {
-    const pc = this.getPeer(callId);
+    try {
+      // Create a fingerprint of this answer
+      const answerFingerprint = sdp?.sdp?.substring(0, 200) || '';
 
-    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      if (this.lastProcessedAnswer === answerFingerprint) {
+        this.log('Duplicate answer detected, ignoring');
+        return;
+      }
+
+      if (!this.peerConnection) return;
+      if (this.currentCallId !== callId) return;
+
+      const signalingState = this.peerConnection.signalingState;
+      this.log(`Handling answer, signaling state: ${signalingState}`);
+
+      if (signalingState !== 'have-local-offer') {
+        this.log('Ignoring answer:', signalingState);
+        return;
+      }
+
+      this.lastProcessedAnswer = answerFingerprint;
+
+      await this.peerConnection.setRemoteDescription(
+        new RTCSessionDescription(sdp),
+      );
+
+      await this.flushCandidates();
+      this.setState(CallState.CONNECTING);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  setMyUserId(userId: string) {
+    console.log('[WebRTC] Setting user ID:', userId);
+    console.trace(); // This will show where it's being called from
+    this.myUserId = userId;
+  }
+
+  private getMyUserId(): string {
+    if (!this.myUserId) {
+      throw new Error('User ID not set');
+    }
+    return this.myUserId;
   }
 
   async handleCandidate(callId: string, candidate: any) {
-    const pc = this.getPeer(callId);
+    if (!this.peerConnection) return;
+    if (this.currentCallId !== callId) return;
 
     try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      const ice = new RTCIceCandidate(candidate);
+
+      if (!this.peerConnection.remoteDescription) {
+        this.pendingCandidates.push(ice);
+        return;
+      }
+
+      await this.peerConnection.addIceCandidate(ice);
     } catch (e) {
-      console.log('ICE error:', e);
+      console.log('ICE error', e);
     }
   }
 
-  getRemoteStream(callId: string) {
-    return this.streams.get(callId);
-  }
+  private async flushCandidates() {
+    if (!this.peerConnection) return;
 
-  getLocalStream(callId: string) {
-    return this.localStreams.get(callId);
-  }
-
-  endCall(callId: string) {
-    const pc = this.peers.get(callId);
-
-    pc?.close();
-
-    const stream = this.getLocalStream(callId);
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop()); // CRITICAL!
+    while (this.pendingCandidates.length) {
+      const c = this.pendingCandidates.shift();
+      if (c) await this.peerConnection.addIceCandidate(c);
     }
-    this.localStreams.delete(callId);
+  }
 
-    this.peers.delete(callId);
-    this.streams.delete(callId);
-    // this.localStreams.delete(callId);
+  private safeCleanup() {
+    this.log('Cleanup');
+
+    try {
+      this.peerConnection?.close();
+    } catch {}
+
+    this.localStream?.getTracks().forEach(t => t.stop());
+
+    this.peerConnection = null;
+    this.localStream = null;
+    this.remoteStream = null;
+
+    this.pendingCandidates = [];
+
+    this.currentCallId = null;
+    this.currentPeerId = null;
+
+    this.setState(CallState.ENDED);
+
+    InCallManager.stop();
+  }
+
+  endCall() {
+    this.safeCleanup();
   }
 }
 

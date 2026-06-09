@@ -17,23 +17,20 @@ class SocketService {
     'getState'
   > | null = null;
 
-  currentRoute: string | undefined = undefined;
-
-  private myUserId: string | null = null;
+  currentRoute: string | undefined;
 
   private activeCallId: string | null = null;
 
-  platform = Platform;
-  url =
-    Platform.OS === 'ios' ? 'http://localhost:3000' : 'http://10.0.2.2:3000';
-
   constructor() {
-    this.socket = io(this.url, {
-      autoConnect: false,
-      transports: ['websocket'],
-      reconnection: true,
-      timeout: 20000,
-    });
+    this.socket = io(
+      Platform.OS === 'ios' ? 'http://localhost:3000' : 'http://10.0.2.2:3000',
+      {
+        autoConnect: false,
+        transports: ['websocket'],
+        reconnection: true,
+        timeout: 20000,
+      },
+    );
 
     this.socket.on('connect', () => {
       console.log('✅ Connected:', this.socket.id);
@@ -43,6 +40,10 @@ class SocketService {
       console.log('❌ Disconnected:', reason);
     });
 
+    this.socket.on('connect_error', error => {
+      console.log('🚨 Connection Error:', error.message);
+    });
+
     this.socket.on(
       'call:accepted',
       async (data: { callId: string; calleeId: string }) => {
@@ -50,68 +51,46 @@ class SocketService {
 
         this.activeCallId = data.callId;
 
-        try {
-          // 1. Set active call
-          call.setActiveCall(data.callId);
+        call.setActiveCall(data.callId);
 
-          await webRtc.onCallAccepted?.(data.callId, data.calleeId);
-        } catch (err) {
-          console.error('Error handling call acceptance:', err);
-        }
+        await webRtc.onCallAccepted?.(data.callId, data.calleeId);
       },
     );
 
-    this.socket.on('connect_error', error => {
-      console.log('🚨 Connection Error:', error.message);
-    });
-
     this.socket.on('call:ended', (data: { callId: string; reason: string }) => {
-      call.endCall(data.callId, data.reason);
+      if (this.activeCallId !== data.callId) return;
+
       this.cleanupCall();
+
+      call.endCall(data.callId, data.reason);
+
       if (this.currentRoute === 'Caller' || this.currentRoute === 'Callee') {
-        if (this.navigation?.canGoBack()) this.navigation?.goBack();
+        this.navigation?.canGoBack() && this.navigation.goBack();
       }
     });
 
     this.socket.on(
       'call:timeout',
       (data: { callId: string; reason: string }) => {
-        console.log('Call timeout');
+        if (this.activeCallId !== data.callId) return;
+
         this.cleanupCall();
-        webRtc.endCall();
+
         callKeep.endCall(data.callId);
-        if (this.currentRoute === 'Callee' || this.currentRoute === 'Caller')
-          if (this.navigation?.canGoBack()) this.navigation?.goBack();
+
+        if (this.currentRoute === 'Caller' || this.currentRoute === 'Callee') {
+          this.navigation?.canGoBack() && this.navigation.goBack();
+        }
       },
     );
 
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
-      if (payload.from === this.myUserId) {
-        console.log('⏭️ Ignoring signal from self:', payload.type);
-        return;
-      }
-
       if (!payload.callId) return;
-
-      console.log(`[SIGNAL RECEIVED] ${payload.type} at ${Date.now()}`, {
-        callId: payload.callId,
-        activeCallId: this.activeCallId,
-        from: payload.from,
-        to: payload.to,
-        myId: this.myUserId,
-        hasSdp: !!payload.sdp,
-        hasCandidate: !!payload.candidate,
-      });
 
       // 1. Ignore old calls immediately
       if (this.activeCallId && payload.callId !== this.activeCallId) {
         console.log('Ignoring stale signal:', payload.type);
         return;
-      }
-
-      if (!this.activeCallId) {
-        console.log('Setting activeCallId from signal:', payload.callId);
-        this.activeCallId = payload.callId;
       }
 
       // 2. Validate payload integrity
@@ -127,30 +106,30 @@ class SocketService {
   connect(userId: string) {
     this.socket.io.opts.query = { userId };
     this.socket.connect();
-    this.myUserId = userId;
-    webRtc.setMyUserId(userId);
   }
 
-  getMyUserId() {
-    return this.myUserId;
-  }
-
-  // call:initiate
   initiateCall(data: InitiateCallPayload) {
+    this.activeCallId = data.callId;
+
     this.socket.emit('call:initiate', data);
+
     this.navigation?.navigate('Caller', data);
   }
 
-  // backend: call:accept
   acceptCall(data: { callId: string }) {
+    this.activeCallId = data.callId;
+
     this.socket.emit('call:accept', data);
+
     this.navigation?.navigate('Callee', data);
   }
 
-  // backend: call:end
-  endCall(callId: string, reason: string = 'ended') {
-    this.cleanupCall();
+  endCall(callId: string, reason = 'ended') {
+    if (this.activeCallId !== callId) return;
+
     this.socket.emit('call:end', { callId, reason });
+
+    this.cleanupCall();
   }
 
   sendSignal(data: WebRTCSignalPayload) {
@@ -159,19 +138,11 @@ class SocketService {
       return;
     }
 
-    if (!this.activeCallId && data.type === 'answer') {
-      console.log('Setting activeCallId from answer send:', data.callId);
-      this.activeCallId = data.callId;
-    }
-
     this.socket.emit('webrtc:signal', data);
   }
 
   onIncomingCall(callback: (data: IIncomingCallData) => void) {
-    this.socket.on('call:incoming', (data: IIncomingCallData) => {
-      this.activeCallId = data.callId;
-      callback(data);
-    });
+    this.socket.on('call:incoming', callback);
   }
 
   private cleanupCall() {

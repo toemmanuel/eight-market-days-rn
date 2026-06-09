@@ -10,6 +10,8 @@ export interface InitiateCallPayload {
   callType: 'audio' | 'video';
 }
 
+export type CallType = 'audio' | 'video';
+
 export interface AcceptCallPayload {
   callId: string;
 
@@ -39,13 +41,21 @@ export interface IIncomingCallData {
 
   callerName: string;
 
+  calleeName: string;
+
   callType: string;
 
   timestamp: string;
 }
 
+export interface ICall extends IIncomingCallData {
+  userName: string;
+}
+
 export interface WebRTCSignalPayload {
-  to: string;
+  to: string; // Recipient
+
+  from: string; // Sender - ADD THIS
 
   callId: string;
 

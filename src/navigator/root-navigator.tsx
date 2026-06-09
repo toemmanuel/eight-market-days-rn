@@ -12,8 +12,8 @@ export default function RootNavigator() {
       }}
     >
       <Screen name="Init" component={InitScreen} />
-      <Screen name="Callee" component={CalleeScreen} />
       <Screen name="Caller" component={CallerScreen} />
+      <Screen name="Callee" component={CalleeScreen} />
     </Navigator>
   );
 }

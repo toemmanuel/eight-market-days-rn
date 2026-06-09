@@ -6,6 +6,7 @@ import {
 } from '@react-navigation/native';
 import { socket } from './socket';
 import {
+  CallType,
   IIncomingCallData,
   InitiateCallPayload,
   StartCallPayload,
@@ -22,7 +23,6 @@ import notifee, {
   AndroidImportance,
   EventType,
 } from '@notifee/react-native';
-import DeviceInfo from 'react-native-device-info';
 
 const isIOS = Platform.OS === 'ios';
 
@@ -183,11 +183,9 @@ class CallKeep {
 
     await new Promise(resolve => setTimeout(() => resolve(undefined), 100));
 
-    let bundleId = DeviceInfo.getBundleId();
-
     const generatedId = await notifee.displayNotification({
-      title: 'Incoming Call',
-      body: name || handle,
+      title: name || handle,
+      body: 'Incoming call via 8 Market Days',
       data: {
         callUUID,
         callId: callUUID,
@@ -197,6 +195,7 @@ class CallKeep {
       android: {
         channelId: this.channelId || 'calls',
         smallIcon: 'ic_notification',
+        largeIcon: 'ic_launcher',
         importance: AndroidImportance.HIGH,
         category: AndroidCategory.CALL,
         fullScreenAction: { id: 'fullscreen' },
@@ -205,11 +204,11 @@ class CallKeep {
         color: '#4CAF50',
         actions: [
           {
-            title: 'Decline',
+            title: '&#10060;  Decline',
             pressAction: { id: 'decline', launchActivity: 'default' },
           },
           {
-            title: 'Answer',
+            title: '&#128222; Answer',
             pressAction: { id: 'answer', launchActivity: 'default' },
           },
         ],
@@ -390,15 +389,19 @@ class Call {
   private ready = false;
   navigationRef = createNavigationContainerRef();
   private callData: IIncomingCallData | null = null;
+  private callType: CallType | undefined = undefined;
 
   async init() {
     await callKeep.setup();
     this.ready = true;
 
-    // Set callbacks instead of adding listeners
     callKeep.onAnswer(callId => {
       this.acceptCall(callId);
-      webRtc.startCall(callId, this.callData?.calleeId || '');
+      webRtc.startCall(
+        callId,
+        this.callData?.callerId || '',
+        this.callType || 'audio',
+      );
     });
 
     callKeep.onEnd((callId, reason = 'ended') => {
@@ -409,11 +412,13 @@ class Call {
     socket.onIncomingCall(data => {
       if (!this.ready) return;
       this.callData = data;
+      this.callType = data.callType as CallType;
       callKeep.displayIncomingCall(data.callId, data.callerName);
     });
   }
 
   initiateCall(payload: InitiateCallPayload) {
+    this.callType = payload.callType;
     callKeep.startCall(payload);
     socket.initiateCall(payload);
   }
@@ -428,9 +433,9 @@ class Call {
 
   endCall(callId: string, reason: string = 'ended') {
     console.log('Ending call with ID:', callId, 'Reason:', reason);
-    socket?.endCall(callId, reason);
-    webRtc.endCall(callId);
     callKeep.endCall(callId);
+    socket?.endCall(callId, reason);
+    webRtc.endCall();
   }
 
   setActiveCall(callId: string) {

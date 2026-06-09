@@ -9,14 +9,21 @@ import React, { useEffect } from 'react';
 import { call, callKeep, socket, webRtc } from '../libs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { IIncomingCallData } from '../types';
+import { CallType, ICall, IIncomingCallData } from '../types';
+import { AudioCallView } from '../components';
 
 export default function CallScreen() {
   const safeAreaInsets = useSafeAreaInsets();
   const { goBack } = useNavigation();
   const { params } = useRoute();
 
-  const callData = params as any as IIncomingCallData;
+  const incomingCall = params as any as IIncomingCallData;
+  const callType = incomingCall?.callType as CallType;
+
+  const callData: ICall = {
+    ...incomingCall,
+    userName: incomingCall.callerName,
+  };
 
   const calleeId = callData?.calleeId;
 
@@ -25,12 +32,6 @@ export default function CallScreen() {
       socket.connect(calleeId);
     }
   });
-
-  const onEndCall = () => {
-    console.log('Ending call with id:', callData?.callId);
-    call.endCall(callData?.callId as string);
-    goBack();
-  };
 
   useEffect(() => {
     callKeep.currentRoute = 'Callee';
@@ -47,10 +48,9 @@ export default function CallScreen() {
         },
       ]}
     >
-      <Text>In Call...</Text>
-      <TouchableOpacity onPress={onEndCall} style={styles.endCall}>
-        <Text>End Call</Text>
-      </TouchableOpacity>
+      {callType === 'audio' && (
+        <AudioCallView type="callee" callData={callData} />
+      )}
     </View>
   );
 }
