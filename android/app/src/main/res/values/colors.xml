@@ -3,4 +3,5 @@
     <color name="primary_dark">#FE6E20</color>
     <color name="status_bar_color">#FFFFFF</color>
     <color name="notification_icon_color">#c1f476</color>
+    <color name="ic_launcher_background">#0c3a24</color>
 </resources>
