@@ -58,72 +58,72 @@ export default function CallView({ type, callData }: CallViewProps) {
   //   setLocalStream(stream);
   // }, []);
 
-  if (callType === 'audio') {
-    return (
-      <View style={styles.container}>
+  return (
+    <View style={styles.container}>
+      {type === 'caller' && (
         <View style={styles.userCallDetailsView}>
           <Text>Calling...</Text>
           <Text style={styles.largeText}>{callData.userName ?? 'Unknown'}</Text>
         </View>
-        <View>
-          <>
-            {/* REMOTE (main screen) */}
-            {remoteStream && (
-              <RTCView
-                streamURL={remoteStream.toURL()}
-                style={{ flex: 1 }}
-                objectFit="cover"
-              />
-            )}
+      )}
+      <View>
+        <>
+          {/* REMOTE (main screen) */}
+          {remoteStream && (
+            <RTCView
+              streamURL={remoteStream?.toURL()}
+              style={{ flex: 1 }}
+              objectFit="cover"
+            />
+          )}
 
-            {/* LOCAL (small preview) */}
-            {localStream && (
-              <RTCView
-                streamURL={localStream.toURL()}
-                style={{
-                  width: 120,
-                  height: 160,
-                  position: 'absolute',
-                  top: 40,
-                  right: 20,
-                  borderRadius: 10,
-                }}
-                objectFit="cover"
-              />
-            )}
-          </>
-        </View>
-        <View>
-          <View style={styles.ctaTopView}>
-            <View style={styles.ctaTopButtonView}>
-              <TouchableOpacity style={styles.ctaTopButton}>
-                <Volume2Icon />
-              </TouchableOpacity>
-              <Text style={styles.smallText}>Mute</Text>
-            </View>
-            <View style={styles.ctaTopButtonView}>
-              <TouchableOpacity style={styles.ctaTopButton}>
-                <VideoIcon />
-              </TouchableOpacity>
-              <Text style={styles.smallText}>Mute</Text>
-            </View>
-            <View style={styles.ctaTopButtonView}>
-              <TouchableOpacity style={styles.ctaTopButton}>
-                <MicIcon />
-              </TouchableOpacity>
-              <Text style={styles.smallText}>Mute</Text>
-            </View>
-          </View>
-
-          <TouchableOpacity onPress={onEndCall} style={styles.ctaEndCallButton}>
-            <View style={{ transform: [{ rotateZ: '135deg' }] }}>
-              <PhoneIcon fill={'white'} color={'#da2f25'} size={32} />
-            </View>
-          </TouchableOpacity>
-        </View>
+          {/* LOCAL (small preview) */}
+          {localStream && (
+            <RTCView
+              streamURL={localStream?.toURL()}
+              style={{
+                width: 120,
+                height: 160,
+                position: 'absolute',
+                top: 40,
+                right: 20,
+                borderRadius: 10,
+              }}
+              objectFit="cover"
+            />
+          )}
+        </>
       </View>
-    );
-  }
+      <View>
+        <View style={styles.ctaTopView}>
+          <View style={styles.ctaTopButtonView}>
+            <TouchableOpacity style={styles.ctaTopButton}>
+              <Volume2Icon />
+            </TouchableOpacity>
+            <Text style={styles.smallText}>Mute</Text>
+          </View>
+          <View style={styles.ctaTopButtonView}>
+            <TouchableOpacity style={styles.ctaTopButton}>
+              <VideoIcon />
+            </TouchableOpacity>
+            <Text style={styles.smallText}>Mute</Text>
+          </View>
+          <View style={styles.ctaTopButtonView}>
+            <TouchableOpacity style={styles.ctaTopButton}>
+              <MicIcon />
+            </TouchableOpacity>
+            <Text style={styles.smallText}>Mute</Text>
+          </View>
+        </View>
+
+        <TouchableOpacity onPress={onEndCall} style={styles.ctaEndCallButton}>
+          <View style={{ transform: [{ rotateZ: '135deg' }] }}>
+            <PhoneIcon fill={'white'} color={'#da2f25'} size={32} />
+          </View>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({

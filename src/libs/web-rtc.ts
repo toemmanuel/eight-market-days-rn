@@ -9,6 +9,7 @@ import {
 import InCallManager from 'react-native-incall-manager';
 import { socket } from './socket';
 import { CallType, WebRTCSignalPayload } from '../types';
+import { log } from './shared';
 
 const configuration = {
   iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
@@ -28,6 +29,12 @@ export class WebRTCService {
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
+
+  private webRtcLog: Logger;
+
+  constructor(private namespace: string = 'WEB-RTC') {
+    this.webRtcLog = new Logger(this.namespace);
+  }
 
   currentCallId: string | null = null;
   private currentPeerId: string | null = null;
@@ -59,10 +66,6 @@ export class WebRTCService {
     this.onStateChange?.(state);
   }
 
-  private log(...args: any[]) {
-    if (__DEV__) console.log('[WebRTC]', ...args);
-  }
-
   private async createLocalStream() {
     if (this.localStream) return this.localStream;
 
@@ -89,12 +92,14 @@ export class WebRTCService {
 
   private createPeer(peerId: string, callId: string) {
     if (this.peerConnection && this.currentCallId === callId) {
-      this.log('Peer already exists for this call');
+      this.webRtcLog.log('Peer already exists for this call');
       return this.peerConnection;
     }
 
     if (this.peerConnection) {
-      this.log('Closing existing peerConnection before creating new one');
+      this.webRtcLog.log(
+        'Closing existing peerConnection before creating new one',
+      );
       this.peerConnection.close();
       this.peerConnection = null;
     }
@@ -197,13 +202,13 @@ export class WebRTCService {
     const { callId, type, sdp, from } = payload;
 
     if (from === this.myUserId) {
-      this.log('Ignoring signal from self');
+      this.webRtcLog.log('Ignoring signal from self');
       return;
     }
 
     const signalKey = `${callId}-${type}-${sdp?.sdp?.substring(0, 50)}`;
     if (this.processedSignals.has(signalKey)) {
-      this.log('Ignoring duplicate signal');
+      this.webRtcLog.log('Ignoring duplicate signal');
       return;
     }
     this.processedSignals.add(signalKey);
@@ -281,7 +286,7 @@ export class WebRTCService {
       const answerFingerprint = sdp?.sdp?.substring(0, 200) || '';
 
       if (this.lastProcessedAnswer === answerFingerprint) {
-        this.log('Duplicate answer detected, ignoring');
+        this.webRtcLog.log('Duplicate answer detected, ignoring');
         return;
       }
 
@@ -289,10 +294,10 @@ export class WebRTCService {
       if (this.currentCallId !== callId) return;
 
       const signalingState = this.peerConnection.signalingState;
-      this.log(`Handling answer, signaling state: ${signalingState}`);
+      this.webRtcLog.log(`Handling answer, signaling state: ${signalingState}`);
 
       if (signalingState !== 'have-local-offer') {
-        this.log('Ignoring answer:', signalingState);
+        this.webRtcLog.log('Ignoring answer:', signalingState);
         return;
       }
 
@@ -350,7 +355,7 @@ export class WebRTCService {
   }
 
   private safeCleanup() {
-    this.log('Cleanup');
+    this.webRtcLog.log('Cleanup');
 
     try {
       this.peerConnection?.close();

@@ -23,11 +23,15 @@ class SocketService {
 
   private activeCallId: string | null = null;
 
+  private socketLogger: Logger;
+
   platform = Platform;
   url =
     Platform.OS === 'ios' ? 'http://localhost:3000' : 'http://10.0.2.2:3000';
 
-  constructor() {
+  constructor(private namespace: string = 'WEB-SOCKET') {
+    this.socketLogger = new Logger(this.namespace);
+
     this.socket = io(this.url, {
       autoConnect: false,
       transports: ['websocket'],
@@ -36,17 +40,17 @@ class SocketService {
     });
 
     this.socket.on('connect', () => {
-      console.log('✅ Connected:', this.socket.id);
+      this.socketLogger.log('✅ Connected:', this.socket.id);
     });
 
     this.socket.on('disconnect', reason => {
-      console.log('❌ Disconnected:', reason);
+      this.socketLogger.log('❌ Disconnected:', reason);
     });
 
     this.socket.on(
       'call:accepted',
       async (data: { callId: string; calleeId: string }) => {
-        console.log('✅ Call accepted:', data);
+        this.socketLogger.log('✅ Call accepted:', data);
 
         this.activeCallId = data.callId;
 
@@ -62,7 +66,7 @@ class SocketService {
     );
 
     this.socket.on('connect_error', error => {
-      console.log('🚨 Connection Error:', error.message);
+      this.socketLogger.log('🚨 Connection Error:', error.message);
     });
 
     this.socket.on('call:ended', (data: { callId: string; reason: string }) => {
@@ -76,7 +80,7 @@ class SocketService {
     this.socket.on(
       'call:timeout',
       (data: { callId: string; reason: string }) => {
-        console.log('Call timeout');
+        this.socketLogger.log('Call timeout');
         this.cleanupCall();
         webRtc.endCall();
         callKeep.endCall(data.callId);
@@ -87,30 +91,36 @@ class SocketService {
 
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
       if (payload.from === this.myUserId) {
-        console.log('⏭️ Ignoring signal from self:', payload.type);
+        this.socketLogger.log('⏭️ Ignoring signal from self:', payload.type);
         return;
       }
 
       if (!payload.callId) return;
 
-      console.log(`[SIGNAL RECEIVED] ${payload.type} at ${Date.now()}`, {
-        callId: payload.callId,
-        activeCallId: this.activeCallId,
-        from: payload.from,
-        to: payload.to,
-        myId: this.myUserId,
-        hasSdp: !!payload.sdp,
-        hasCandidate: !!payload.candidate,
-      });
+      this.socketLogger.log(
+        `[SIGNAL RECEIVED] ${payload.type} at ${Date.now()}`,
+        {
+          callId: payload.callId,
+          activeCallId: this.activeCallId,
+          from: payload.from,
+          to: payload.to,
+          myId: this.myUserId,
+          hasSdp: !!payload.sdp,
+          hasCandidate: !!payload.candidate,
+        },
+      );
 
       // 1. Ignore old calls immediately
       if (this.activeCallId && payload.callId !== this.activeCallId) {
-        console.log('Ignoring stale signal:', payload.type);
+        this.socketLogger.log('Ignoring stale signal:', payload.type);
         return;
       }
 
       if (!this.activeCallId) {
-        console.log('Setting activeCallId from signal:', payload.callId);
+        this.socketLogger.log(
+          'Setting activeCallId from signal:',
+          payload.callId,
+        );
         this.activeCallId = payload.callId;
       }
 
@@ -155,12 +165,15 @@ class SocketService {
 
   sendSignal(data: WebRTCSignalPayload) {
     if (this.activeCallId && data.callId !== this.activeCallId) {
-      console.log('Blocking signal from old call');
+      this.socketLogger.log('Blocking signal from old call');
       return;
     }
 
     if (!this.activeCallId && data.type === 'answer') {
-      console.log('Setting activeCallId from answer send:', data.callId);
+      this.socketLogger.log(
+        'Setting activeCallId from answer send:',
+        data.callId,
+      );
       this.activeCallId = data.callId;
     }
 
@@ -175,7 +188,7 @@ class SocketService {
   }
 
   private cleanupCall() {
-    console.log('🧹 Cleaning socket call state');
+    this.socketLogger.log('🧹 Cleaning socket call state');
 
     this.activeCallId = null;
   }

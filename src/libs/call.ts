@@ -50,7 +50,11 @@ class CallKeep {
     }
   >();
 
-  private constructor() {}
+  private callKeepLogger: Logger;
+
+  private constructor(private namespace: string = 'Call') {
+    this.callKeepLogger = new Logger(this.namespace);
+  }
 
   static getInstance(): CallKeep {
     if (!CallKeep.instance) {
@@ -105,7 +109,7 @@ class CallKeep {
 
       // Register foreground service
       notifee.registerForegroundService(async notification => {
-        console.log('Foreground service is running');
+        this.callKeepLogger.log('Foreground service is running');
         // Keep service alive
         return new Promise(() => {});
       });
@@ -124,9 +128,9 @@ class CallKeep {
         },
       });
 
-      console.log('Foreground service setup complete');
+      this.callKeepLogger.log('Foreground service setup complete');
     } catch (error) {
-      console.error('Failed to setup foreground service:', error);
+      this.callKeepLogger.error('Failed to setup foreground service:', error);
     }
   }
 
@@ -232,7 +236,7 @@ class CallKeep {
   }
 
   private handleConnectionFailed = ({ callUUID, error }: any) => {
-    console.error('Connection failed:', callUUID, error);
+    this.callKeepLogger.error('Connection failed:', callUUID, error);
     this.stopRingtone();
     if (callUUID) {
       this.cancelNotification(callUUID);
@@ -342,14 +346,14 @@ class CallKeep {
 
       this.timeoutCall(callId);
     } catch (error) {
-      console.log('Display call error:', error);
+      this.callKeepLogger.log('Display call error:', error);
     }
   }
 
   timeoutCall(callId: string) {
     setTimeout(() => {
       if (this.activeCalls.get(callId)?.isRinging) {
-        console.log('Call timeout, cancelling:', callId);
+        this.callKeepLogger.log('Call timeout, cancelling:', callId);
         this.cancelIncomingCall(callId);
       }
     }, 30000);
@@ -390,6 +394,12 @@ class Call {
   navigationRef = createNavigationContainerRef();
   private callData: IIncomingCallData | null = null;
   private callType: CallType | undefined = undefined;
+
+  private callLogger: Logger;
+
+  constructor(private namespace: string = 'WEB-RTC') {
+    this.callLogger = new Logger(this.namespace);
+  }
 
   async init() {
     await callKeep.setup();
@@ -432,7 +442,7 @@ class Call {
   }
 
   endCall(callId: string, reason: string = 'ended') {
-    console.log('Ending call with ID:', callId, 'Reason:', reason);
+    this.callKeepLogger.log('Ending call with ID:', callId, 'Reason:', reason);
     callKeep.endCall(callId);
     socket?.endCall(callId, reason);
     webRtc.endCall();
