@@ -8,6 +8,7 @@ import type { NavigationProp } from '@react-navigation/native';
 import { Platform } from 'react-native';
 import { call, callKeep } from './call';
 import { webRtc } from './web-rtc';
+import { Logger } from './logger';
 
 class SocketService {
   socket: IOSocket;

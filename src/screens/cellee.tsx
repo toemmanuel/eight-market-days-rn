@@ -1,16 +1,10 @@
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  AppState,
-  StyleSheet,
-} from 'react-native';
+import { View, AppState, StyleSheet } from 'react-native';
 import React, { useEffect } from 'react';
-import { call, callKeep, socket, webRtc } from '../libs';
+import { callKeep, socket } from '../libs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { CallType, ICall, IIncomingCallData } from '../types';
-import { AudioCallView } from '../components';
+import { CallView } from '../components';
 
 export default function CallScreen() {
   const safeAreaInsets = useSafeAreaInsets();
@@ -18,7 +12,6 @@ export default function CallScreen() {
   const { params } = useRoute();
 
   const incomingCall = params as any as IIncomingCallData;
-  const callType = incomingCall?.callType as CallType;
 
   const callData: ICall = {
     ...incomingCall,
@@ -43,14 +36,12 @@ export default function CallScreen() {
       style={[
         styles.container,
         {
-          paddingTop: safeAreaInsets.top,
-          paddingBottom: safeAreaInsets.bottom,
+          paddingTop: safeAreaInsets.top + 20,
+          paddingBottom: safeAreaInsets.bottom + 20,
         },
       ]}
     >
-      {callType === 'audio' && (
-        <AudioCallView type="callee" callData={callData} />
-      )}
+      <CallView type="callee" callData={callData} />
     </View>
   );
 }
@@ -60,17 +51,5 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingLeft: 15,
     paddingRight: 15,
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
-  endCall: {
-    height: 60,
-    width: 60,
-    backgroundColor: 'red',
-    borderRadius: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

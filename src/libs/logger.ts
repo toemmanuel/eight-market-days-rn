@@ -1,6 +1,6 @@
 type LogType = 'log' | 'info' | 'warn' | 'error';
 
-class Logger {
+export class Logger {
   constructor(private namespace: string) {}
 
   private print(type: LogType, ...args: any[]) {

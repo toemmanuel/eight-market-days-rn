@@ -5,25 +5,22 @@ import {
   mediaDevices,
   MediaStream,
 } from 'react-native-webrtc';
+import { EventEmitter } from 'events';
 
 import InCallManager from 'react-native-incall-manager';
 import { socket } from './socket';
-import { CallType, WebRTCSignalPayload } from '../types';
-import { log } from './shared';
+import {
+  CALL_STATE,
+  CallType,
+  CurrentFacingMode,
+  WebRTCEvents,
+  WebRTCSignalPayload,
+} from '../types';
+import { Logger } from './logger';
 
 const configuration = {
   iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
 };
-
-enum CallState {
-  IDLE = 'idle',
-  CALLING = 'calling',
-  RINGING = 'ringing',
-  CONNECTING = 'connecting',
-  CONNECTED = 'connected',
-  FAILED = 'failed',
-  ENDED = 'ended',
-}
 
 export class WebRTCService {
   private peerConnection: RTCPeerConnection | null = null;
@@ -32,9 +29,15 @@ export class WebRTCService {
 
   private webRtcLog: Logger;
 
+  private emitter = new EventEmitter();
+
+  private currentFacingMode: CurrentFacingMode = 'user';
+
   constructor(private namespace: string = 'WEB-RTC') {
     this.webRtcLog = new Logger(this.namespace);
   }
+
+  private isSpeakerEnabled: boolean = true;
 
   currentCallId: string | null = null;
   private currentPeerId: string | null = null;
@@ -42,7 +45,7 @@ export class WebRTCService {
   private myUserId: string | null = null;
 
   private callType: CallType = 'audio';
-  private callState: CallState = CallState.IDLE;
+  private callState: CALL_STATE = CALL_STATE.IDLE;
 
   private lastProcessedAnswer = '';
 
@@ -51,23 +54,34 @@ export class WebRTCService {
   private pendingCandidates: RTCIceCandidate[] = [];
 
   private onRemoteStream: ((stream: MediaStream) => void) | null = null;
-  private onStateChange: ((state: CallState) => void) | null = null;
 
-  setOnRemoteStream(cb: (stream: MediaStream) => void) {
-    this.onRemoteStream = cb;
-  }
+  private setState(state: CALL_STATE) {
+    if (this.callState === state) return;
 
-  setOnStateChange(cb: (state: CallState) => void) {
-    this.onStateChange = cb;
-  }
-
-  private setState(state: CallState) {
     this.callState = state;
-    this.onStateChange?.(state);
+
+    this.webRtcLog.info(`State changed → ${state}`);
+
+    this.emitter.emit('callState', state);
+  }
+
+  public onCallStateChange(callback: (state: CALL_STATE) => void) {
+    this.emitter.on('callState', callback);
+
+    return () => {
+      this.emitter.off('callState', callback);
+    };
+  }
+
+  getCallState() {
+    return this.callState;
   }
 
   private async createLocalStream() {
-    if (this.localStream) return this.localStream;
+    if (this.localStream) {
+      this.emitter.emit('localStream', this.localStream);
+      return this.localStream;
+    }
 
     const stream = await mediaDevices.getUserMedia({
       audio: true,
@@ -79,6 +93,9 @@ export class WebRTCService {
     }
 
     this.localStream = stream;
+
+    this.emitter.emit('localStream', stream);
+
     return stream;
   }
 
@@ -90,9 +107,58 @@ export class WebRTCService {
     return this.remoteStream;
   }
 
+  public onRemoteStreamChange(callback: (stream: MediaStream) => void) {
+    this.emitter.on('remoteStream', callback);
+
+    return () => {
+      this.emitter.off('remoteStream', callback);
+    };
+  }
+
+  public onLocalStreamChange(callback: (stream: MediaStream | null) => void) {
+    this.emitter.on('localStream', callback);
+
+    if (this.localStream) {
+      callback(this.localStream);
+    }
+
+    return () => {
+      this.emitter.off('localStream', callback);
+    };
+  }
+
+  public onMicrophoneStateChange(callback: (micState: boolean) => void) {
+    this.emitter.on('microphoneState', callback);
+
+    return () => {
+      this.emitter.off('microphoneState', callback);
+    };
+  }
+
+  public onCameraStateChange(callback: (micState: boolean) => void) {
+    this.emitter.on('cameraState', callback);
+
+    return () => {
+      this.emitter.off('cameraState', callback);
+    };
+  }
+
+  public onSpeakerChange(callback: (route: boolean) => void) {
+    this.emitter.on('speakerState', callback);
+
+    return () => {
+      this.emitter.off('speakerState', callback);
+    };
+  }
+
   private createPeer(peerId: string, callId: string) {
-    if (this.peerConnection && this.currentCallId === callId) {
-      this.webRtcLog.log('Peer already exists for this call');
+    if (
+      this.peerConnection &&
+      this.currentCallId === callId &&
+      this.callState !== CALL_STATE.ENDED &&
+      this.callState !== CALL_STATE.FAILED
+    ) {
+      this.webRtcLog.log('Reusing existing peer connection');
       return this.peerConnection;
     }
 
@@ -102,6 +168,12 @@ export class WebRTCService {
       );
       this.peerConnection.close();
       this.peerConnection = null;
+      this.pendingCandidates = []; // Clear pending candidates
+    }
+
+    if (this.peerConnection && this.currentCallId === callId) {
+      this.webRtcLog.log('Peer already exists for this call');
+      return this.peerConnection;
     }
 
     const pc = new RTCPeerConnection(configuration);
@@ -135,22 +207,37 @@ export class WebRTCService {
 
       this.remoteStream = stream;
       this.onRemoteStream?.(stream);
+      this.emitter.emit('remoteStream', stream);
     };
 
     pc.onconnectionstatechange = () => {
-      this.log('Connection:', pc.connectionState);
+      this.webRtcLog.info(`Connection state → ${pc.connectionState}`);
 
-      if (pc.connectionState === 'connected') {
-        this.setState(CallState.CONNECTED);
-      }
+      switch (pc.connectionState) {
+        case 'new':
+          break;
 
-      if (pc.connectionState === 'failed') {
-        this.setState(CallState.FAILED);
-        this.safeCleanup();
-      }
+        case 'connecting':
+          this.setState(CALL_STATE.CONNECTING);
+          break;
 
-      if (pc.connectionState === 'closed') {
-        this.setState(CallState.ENDED);
+        case 'connected':
+          this.setState(CALL_STATE.CONNECTED);
+          break;
+
+        case 'disconnected':
+          this.setState(CALL_STATE.CONNECTING);
+          break;
+
+        case 'failed':
+          this.setState(CALL_STATE.FAILED);
+          this.safeCleanup();
+          break;
+
+        case 'closed':
+          this.setState(CALL_STATE.ENDED);
+          socket.endCall(callId, 'ended');
+          break;
       }
     };
 
@@ -163,7 +250,7 @@ export class WebRTCService {
       if (this.peerConnection) this.safeCleanup();
 
       this.callType = type;
-      this.setState(CallState.CALLING);
+      this.setState(CALL_STATE.CALLING);
 
       InCallManager.start({ media: 'audio' });
 
@@ -173,14 +260,6 @@ export class WebRTCService {
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-
-      console.log('CALL_PAYLOAD::', {
-        to: calleeId,
-        from: this.getMyUserId(),
-        callId,
-        type: 'offer',
-        sdp: offer,
-      });
 
       socket.sendSignal({
         to: calleeId,
@@ -206,18 +285,48 @@ export class WebRTCService {
       return;
     }
 
-    const signalKey = `${callId}-${type}-${sdp?.sdp?.substring(0, 50)}`;
-    if (this.processedSignals.has(signalKey)) {
-      this.webRtcLog.log('Ignoring duplicate signal');
-      return;
-    }
-    this.processedSignals.add(signalKey);
+    // const signalKey = `${callId}-${type}-${sdp?.sdp?.substring(0, 50)}`;
+    // if (this.processedSignals.has(signalKey)) {
+    //   this.webRtcLog.log('Ignoring duplicate signal');
+    //   return;
+    // }
+    // this.processedSignals.add(signalKey);
 
-    // Clear old keys after 5 seconds
-    setTimeout(() => this.processedSignals.delete(signalKey), 5000);
+    // // Clear old keys after 5 seconds
+    // setTimeout(() => this.processedSignals.delete(signalKey), 5000);
+
+    // if (this.currentCallId && this.currentCallId !== callId) {
+    //   return; // ignore old calls
+    // }
+
+    if (type !== 'candidate') {
+      const signalKey = `${callId}-${type}-${sdp?.sdp?.substring(0, 100)}`;
+      if (this.processedSignals.has(signalKey)) {
+        this.webRtcLog.log('Ignoring duplicate signal');
+        return;
+      }
+      this.processedSignals.add(signalKey);
+      setTimeout(() => this.processedSignals.delete(signalKey), 5000);
+    }
+
+    if (type === 'offer') {
+      if (this.callState === CALL_STATE.CALLING) {
+        this.webRtcLog.warn('Received offer while calling - ignoring');
+        return;
+      }
+    }
 
     if (this.currentCallId && this.currentCallId !== callId) {
-      return; // ignore old calls
+      if (this.callState === CALL_STATE.CONNECTED) {
+        this.webRtcLog.log(
+          'Ignoring signal for different call ID - already connected',
+        );
+        return;
+      }
+      this.webRtcLog.log(
+        `Switching from call ${this.currentCallId} to ${callId}`,
+      );
+      this.safeCleanup();
     }
 
     switch (type) {
@@ -240,13 +349,13 @@ export class WebRTCService {
       media: this.callType === 'audio' ? 'audio' : 'video',
     });
 
-    this.setState(CallState.CONNECTING);
+    this.setState(CALL_STATE.CONNECTING);
   }
 
   async handleOffer(callId: string, to: string, sdp: any, type: CallType) {
     try {
       this.callType = type;
-      this.setState(CallState.RINGING);
+      this.setState(CALL_STATE.RINGING);
 
       InCallManager.start({ media: 'audio' });
 
@@ -260,9 +369,6 @@ export class WebRTCService {
 
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-
-      console.log('FROM::', this.getMyUserId());
-      console.log('TO::', to);
 
       socket.sendSignal({
         to: to,
@@ -308,15 +414,103 @@ export class WebRTCService {
       );
 
       await this.flushCandidates();
-      this.setState(CallState.CONNECTING);
+      this.setState(CALL_STATE.CONNECTING);
     } catch (e) {
       console.error(e);
     }
   }
 
+  public toggleSpeaker(enabled: boolean) {
+    this.isSpeakerEnabled = enabled;
+
+    if (enabled) {
+      InCallManager.setForceSpeakerphoneOn(true);
+      InCallManager.setSpeakerphoneOn(true);
+    } else {
+      InCallManager.setForceSpeakerphoneOn(false);
+      InCallManager.setSpeakerphoneOn(false);
+    }
+
+    this.emitter.emit('speakerState', enabled);
+    this.webRtcLog.log(`Speaker ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  public toggleMicrophone(enabled: boolean) {
+    if (!this.localStream) return;
+
+    const audioTracks = this.localStream.getAudioTracks();
+    audioTracks.forEach(track => {
+      track.enabled = enabled;
+    });
+
+    this.emitter.emit('microphoneState', enabled);
+  }
+
+  // Toggle camera (video track)
+  public toggleCamera(enabled: boolean) {
+    if (!this.localStream) return;
+
+    const videoTracks = this.localStream.getVideoTracks();
+    videoTracks.forEach(track => {
+      track.enabled = enabled;
+    });
+
+    this.emitter.emit('cameraState', enabled);
+  }
+
+  // Switch camera (front/back)
+  public async switchCamera() {
+    if (!this.localStream) return;
+
+    const videoTracks = this.localStream.getVideoTracks();
+    if (videoTracks.length === 0) return;
+
+    // Store current state
+    const wasEnabled = videoTracks[0].enabled;
+
+    // Stop current tracks
+    videoTracks.forEach(track => {
+      track.stop();
+      this.localStream?.removeTrack(track);
+    });
+
+    // Get new stream with opposite camera
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: this.currentFacingMode === 'user' ? 'environment' : 'user',
+      },
+    };
+
+    const newStream = await mediaDevices.getUserMedia(constraints);
+    const newVideoTrack = newStream.getVideoTracks()[0];
+    newVideoTrack.enabled = wasEnabled;
+
+    this.localStream.addTrack(newVideoTrack);
+
+    // Toggle facing mode
+    this.currentFacingMode =
+      this.currentFacingMode === 'user' ? 'environment' : 'user';
+
+    this.emitter.emit('localStream', this.localStream);
+    this.webRtcLog.log(`Switched to ${this.currentFacingMode} camera`);
+  }
+
+  // Get current track states
+  public getMicrophoneState(): boolean {
+    if (!this.localStream) return false;
+    const audioTracks = this.localStream.getAudioTracks();
+    return audioTracks.length > 0 ? audioTracks[0].enabled : false;
+  }
+
+  public getCameraState(): boolean {
+    if (!this.localStream) return false;
+    const videoTracks = this.localStream.getVideoTracks();
+    return videoTracks.length > 0 ? videoTracks[0].enabled : false;
+  }
+
   setMyUserId(userId: string) {
-    console.log('[WebRTC] Setting user ID:', userId);
-    console.trace(); // This will show where it's being called from
+    this.webRtcLog.log('Setting user ID:', userId);
     this.myUserId = userId;
   }
 
@@ -341,7 +535,7 @@ export class WebRTCService {
 
       await this.peerConnection.addIceCandidate(ice);
     } catch (e) {
-      console.log('ICE error', e);
+      this.webRtcLog.error('ICE error', e);
     }
   }
 
@@ -372,7 +566,7 @@ export class WebRTCService {
     this.currentCallId = null;
     this.currentPeerId = null;
 
-    this.setState(CallState.ENDED);
+    this.setState(CALL_STATE.ENDED);
 
     InCallManager.stop();
   }

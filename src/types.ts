@@ -65,3 +65,26 @@ export interface WebRTCSignalPayload {
 
   candidate?: any;
 }
+
+export enum CALL_STATE {
+  IDLE = 'idle',
+  CALLING = 'calling',
+  RINGING = 'ringing',
+  CONNECTING = 'connecting',
+  CONNECTED = 'connected',
+  FAILED = 'failed',
+  ENDED = 'ended',
+}
+
+export type CallState = `${CALL_STATE}`;
+
+export type CurrentFacingMode = 'user' | 'environment';
+
+export type WebRTCEvents = {
+  callState: [CallState];
+  remoteStream: [MediaStream];
+  localStream: [MediaStream | null];
+  localStreamReady: [MediaStream];
+  microphoneState: [boolean];
+  cameraState: [boolean];
+};

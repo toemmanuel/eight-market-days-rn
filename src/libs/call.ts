@@ -23,6 +23,7 @@ import notifee, {
   AndroidImportance,
   EventType,
 } from '@notifee/react-native';
+import { Logger } from './logger';
 
 const isIOS = Platform.OS === 'ios';
 
@@ -397,7 +398,7 @@ class Call {
 
   private callLogger: Logger;
 
-  constructor(private namespace: string = 'WEB-RTC') {
+  constructor(private namespace: string = 'CALL') {
     this.callLogger = new Logger(this.namespace);
   }
 
@@ -442,7 +443,7 @@ class Call {
   }
 
   endCall(callId: string, reason: string = 'ended') {
-    this.callKeepLogger.log('Ending call with ID:', callId, 'Reason:', reason);
+    this.callLogger.log('Ending call with ID:', callId, 'Reason:', reason);
     callKeep.endCall(callId);
     socket?.endCall(callId, reason);
     webRtc.endCall();

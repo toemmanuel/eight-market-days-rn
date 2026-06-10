@@ -9,7 +9,7 @@ import {
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { RTCView } from 'react-native-webrtc';
-import { CallType, ICall } from '../types';
+import { CallState, CallType, ICall } from '../types';
 import { call, webRtc } from '../libs';
 
 interface CallViewProps {
@@ -23,25 +23,24 @@ export default function CallView({ type, callData }: CallViewProps) {
   const { goBack, canGoBack } = useNavigation();
 
   const [callDuration, setCallDuration] = useState(0);
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
-  const [isVideoEnabled, setIsVideoEnabled] = useState(callType === 'video');
-  const [connectionStatus, setConnectionStatus] = useState<
-    'connecting' | 'connected' | 'reconnecting' | 'disconnected'
-  >('connecting');
+  const [isVideoEnabled, setIsVideoEnabled] = useState<boolean>(
+    callType === 'video',
+  );
+  const [connectionStatus, setConnectionStatus] =
+    useState<CallState>('calling');
 
   const [localStream, setLocalStream] = React.useState<MediaStream | null>(
     null,
   );
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
-  const [networkQuality, setNetworkQuality] = useState<'good' | 'poor' | 'bad'>(
-    'good',
-  );
-
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeRef = useRef<number | null>(null);
   const reconnectAttempts = useRef(0);
+
+  const callPreState: CallState[] = ['calling', 'connecting', 'ringing'];
 
   const onEndCall = () => {
     call.endCall(callData?.callId as string);
@@ -51,21 +50,51 @@ export default function CallView({ type, callData }: CallViewProps) {
     }
   };
 
-  // React.useEffect(() => {
-  //   const remoteStreamData = webRtc.getRemoteStream();
-  //   if (remoteStreamData) setRemoteStream(remoteStreamData);
-  //   const stream = webRtc.getLocalStream();
-  //   setLocalStream(stream);
-  // }, []);
+  useEffect(() => {
+    const unsubscribeConnection = webRtc.onCallStateChange(connectionState => {
+      setConnectionStatus(connectionState);
+    });
+
+    const unsubscribeRemote = webRtc.onRemoteStreamChange(stream => {
+      setRemoteStream(stream);
+    });
+
+    const unsubscribeLocal = webRtc.onLocalStreamChange(stream => {
+      if (stream) {
+        setLocalStream(stream);
+      }
+    });
+
+    const unsubscribeMic = webRtc.onMicrophoneStateChange?.(enabled => {
+      setIsMuted(enabled);
+    });
+
+    const unsubscribeCamera = webRtc.onCameraStateChange?.(toggle => {
+      setIsVideoEnabled(toggle);
+    });
+
+    const unsubscribeSpeaker = webRtc.onSpeakerChange?.(enabled => {
+      setIsSpeakerOn(enabled);
+    });
+
+    return () => {
+      unsubscribeConnection();
+      unsubscribeRemote();
+      unsubscribeLocal();
+      unsubscribeMic();
+      unsubscribeCamera();
+      unsubscribeSpeaker();
+    };
+  }, []);
 
   return (
     <View style={styles.container}>
-      {type === 'caller' && (
-        <View style={styles.userCallDetailsView}>
-          <Text>Calling...</Text>
-          <Text style={styles.largeText}>{callData.userName ?? 'Unknown'}</Text>
-        </View>
-      )}
+      <View style={styles.userCallDetailsView}>
+        {callPreState.includes(connectionStatus) && (
+          <Text>{connectionStatus}</Text>
+        )}
+        <Text style={styles.largeText}>{callData.userName ?? 'Unknown'}</Text>
+      </View>
       <View>
         <>
           {/* REMOTE (main screen) */}
@@ -97,19 +126,28 @@ export default function CallView({ type, callData }: CallViewProps) {
       <View>
         <View style={styles.ctaTopView}>
           <View style={styles.ctaTopButtonView}>
-            <TouchableOpacity style={styles.ctaTopButton}>
+            <TouchableOpacity
+              onPress={() => webRtc.toggleSpeaker(!isSpeakerOn)}
+              style={styles.ctaTopButton}
+            >
               <Volume2Icon />
             </TouchableOpacity>
-            <Text style={styles.smallText}>Mute</Text>
+            <Text style={styles.smallText}>Speaker</Text>
           </View>
           <View style={styles.ctaTopButtonView}>
-            <TouchableOpacity style={styles.ctaTopButton}>
+            <TouchableOpacity
+              onPress={() => webRtc.toggleCamera(!isVideoEnabled)}
+              style={styles.ctaTopButton}
+            >
               <VideoIcon />
             </TouchableOpacity>
-            <Text style={styles.smallText}>Mute</Text>
+            <Text style={styles.smallText}>video</Text>
           </View>
           <View style={styles.ctaTopButtonView}>
-            <TouchableOpacity style={styles.ctaTopButton}>
+            <TouchableOpacity
+              onPress={() => webRtc.toggleMicrophone(!isMuted)}
+              style={styles.ctaTopButton}
+            >
               <MicIcon />
             </TouchableOpacity>
             <Text style={styles.smallText}>Mute</Text>

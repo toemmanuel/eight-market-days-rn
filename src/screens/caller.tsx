@@ -1,10 +1,10 @@
 import { View, AppState, StyleSheet } from 'react-native';
 import React, { useEffect } from 'react';
-import { call, callKeep, socket, webRtc } from '../libs';
+import { call, callKeep, socket } from '../libs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { CallType, ICall, IIncomingCallData } from '../types';
-import { AudioCallView, CallView } from '../components';
+import { CallView } from '../components';
 
 export default function CallScreen() {
   const safeAreaInsets = useSafeAreaInsets();
@@ -12,14 +12,11 @@ export default function CallScreen() {
   const { params } = useRoute();
 
   const incomingCall = params as any as IIncomingCallData;
-  const callType = incomingCall?.callType as CallType;
 
   const callData: ICall = {
     ...incomingCall,
     userName: incomingCall.calleeName,
   };
-
-  console.log('Params::', params);
 
   const id = callData?.callId;
 
@@ -35,8 +32,6 @@ export default function CallScreen() {
   };
 
   useEffect(() => {
-    // webRtc.init();
-    // webRtc.startLocalStream();
     callKeep.currentRoute = 'Caller';
     socket.currentRoute = 'Caller';
   }, []);
@@ -61,14 +56,5 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingLeft: 15,
     paddingRight: 15,
-  },
-
-  endCall: {
-    height: 60,
-    width: 60,
-    backgroundColor: 'red',
-    borderRadius: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 });

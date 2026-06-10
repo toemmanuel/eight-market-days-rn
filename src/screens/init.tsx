@@ -19,8 +19,6 @@ export default function InitScreen() {
     socket.connect(userId);
   };
 
-  console.log('userId::', userId);
-
   const onMakeCall = () => {
     call.initiateCall({
       callId: uuid.v4(),
