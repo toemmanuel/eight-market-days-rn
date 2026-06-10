@@ -6,6 +6,8 @@ import {
   Volume2Icon,
   VideoIcon,
   PhoneIcon,
+  VolumeXIcon,
+  VideoOffIcon,
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { RTCView } from 'react-native-webrtc';
@@ -16,6 +18,21 @@ interface CallViewProps {
   type: 'caller' | 'callee';
   callData: ICall;
 }
+
+const formatDuration = (seconds: number): string => {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+
+  if (hours > 0) {
+    return `${hours.toString().padStart(2, '0')}:${minutes
+      .toString()
+      .padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes.toString().padStart(2, '0')}:${secs
+    .toString()
+    .padStart(2, '0')}`;
+};
 
 export default function CallView({ type, callData }: CallViewProps) {
   const callType = callData?.callType as CallType;
@@ -38,9 +55,8 @@ export default function CallView({ type, callData }: CallViewProps) {
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeRef = useRef<number | null>(null);
-  const reconnectAttempts = useRef(0);
 
-  const callPreState: CallState[] = ['calling', 'connecting', 'ringing'];
+  const isCallActive = connectionStatus === 'connected';
 
   const onEndCall = () => {
     call.endCall(callData?.callId as string);
@@ -49,6 +65,37 @@ export default function CallView({ type, callData }: CallViewProps) {
       goBack();
     }
   };
+
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      startTimeRef.current = Date.now();
+      timerRef.current = setInterval(() => {
+        if (startTimeRef.current) {
+          const elapsed = Math.floor(
+            (Date.now() - startTimeRef.current) / 1000,
+          );
+          setCallDuration(elapsed);
+        }
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      startTimeRef.current = null;
+
+      if (connectionStatus === 'ended' || connectionStatus === 'failed') {
+        setCallDuration(0);
+      }
+    }
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [connectionStatus]);
 
   useEffect(() => {
     const unsubscribeConnection = webRtc.onCallStateChange(connectionState => {
@@ -81,48 +128,69 @@ export default function CallView({ type, callData }: CallViewProps) {
       unsubscribeConnection();
       unsubscribeRemote();
       unsubscribeLocal();
-      unsubscribeMic();
-      unsubscribeCamera();
-      unsubscribeSpeaker();
+
+      if (unsubscribeMic) unsubscribeMic();
+      if (unsubscribeCamera) unsubscribeCamera();
+      if (unsubscribeSpeaker) unsubscribeSpeaker();
     };
   }, []);
+
+  const getStatusText = (): string => {
+    switch (connectionStatus) {
+      case 'calling':
+        return type === 'caller' ? 'Calling...' : 'Incoming call...';
+      case 'ringing':
+        return 'Ringing...';
+      case 'connecting':
+        return 'Connecting...';
+      case 'connected':
+        return formatDuration(callDuration);
+      case 'failed':
+        return 'Call failed';
+      case 'ended':
+        return 'Call ended';
+      default:
+        return connectionStatus;
+    }
+  };
 
   return (
     <View style={styles.container}>
       <View style={styles.userCallDetailsView}>
-        {callPreState.includes(connectionStatus) && (
-          <Text>{connectionStatus}</Text>
-        )}
         <Text style={styles.largeText}>{callData.userName ?? 'Unknown'}</Text>
+        {!isCallActive && (
+          <Text style={styles.statusText}>{getStatusText()}</Text>
+        )}
+        {isCallActive && (
+          <Text style={styles.timerText}>{getStatusText()}</Text>
+        )}
       </View>
-      <View>
-        <>
-          {/* REMOTE (main screen) */}
-          {remoteStream && (
-            <RTCView
-              streamURL={remoteStream?.toURL()}
-              style={{ flex: 1 }}
-              objectFit="cover"
-            />
-          )}
 
-          {/* LOCAL (small preview) */}
-          {localStream && (
-            <RTCView
-              streamURL={localStream?.toURL()}
-              style={{
-                width: 120,
-                height: 160,
-                position: 'absolute',
-                top: 40,
-                right: 20,
-                borderRadius: 10,
-              }}
-              objectFit="cover"
-            />
-          )}
-        </>
+      <View style={styles.videoContainer}>
+        {isVideoEnabled && (
+          <>
+            {/* REMOTE (main screen) */}
+            {remoteStream && (
+              <RTCView
+                streamURL={remoteStream?.toURL()}
+                style={styles.remoteVideo}
+                objectFit="cover"
+              />
+            )}
+
+            {/* LOCAL (small preview) */}
+            {localStream && (
+              <RTCView
+                mirror
+                streamURL={localStream?.toURL()}
+                style={styles.localVideo}
+                objectFit="cover"
+              />
+            )}
+          </>
+        )}
       </View>
+
       <View>
         <View style={styles.ctaTopView}>
           <View style={styles.ctaTopButtonView}>
@@ -130,7 +198,11 @@ export default function CallView({ type, callData }: CallViewProps) {
               onPress={() => webRtc.toggleSpeaker(!isSpeakerOn)}
               style={styles.ctaTopButton}
             >
-              <Volume2Icon />
+              {isSpeakerOn ? (
+                <Volume2Icon size={24} color="#000" />
+              ) : (
+                <VolumeXIcon size={24} color="#000" />
+              )}
             </TouchableOpacity>
             <Text style={styles.smallText}>Speaker</Text>
           </View>
@@ -139,7 +211,11 @@ export default function CallView({ type, callData }: CallViewProps) {
               onPress={() => webRtc.toggleCamera(!isVideoEnabled)}
               style={styles.ctaTopButton}
             >
-              <VideoIcon />
+              {isVideoEnabled ? (
+                <VideoIcon size={24} color="#000" />
+              ) : (
+                <VideoOffIcon size={24} color="#000" />
+              )}
             </TouchableOpacity>
             <Text style={styles.smallText}>video</Text>
           </View>
@@ -148,7 +224,11 @@ export default function CallView({ type, callData }: CallViewProps) {
               onPress={() => webRtc.toggleMicrophone(!isMuted)}
               style={styles.ctaTopButton}
             >
-              <MicIcon />
+              {isMuted ? (
+                <MicOffIcon size={24} color="#000" />
+              ) : (
+                <MicIcon size={24} color="#000" />
+              )}
             </TouchableOpacity>
             <Text style={styles.smallText}>Mute</Text>
           </View>
@@ -171,6 +251,27 @@ const styles = StyleSheet.create({
     paddingRight: 15,
     flexDirection: 'column',
     justifyContent: 'space-between',
+    gap: 20,
+  },
+
+  videoContainer: {
+    flex: 1,
+    position: 'relative',
+  },
+
+  remoteVideo: {
+    flex: 1,
+  },
+
+  localVideo: {
+    width: 120,
+    height: 160,
+    position: 'absolute',
+    bottom: 20,
+    right: 10,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#fff',
   },
 
   userCallDetailsView: {
@@ -232,5 +333,16 @@ const styles = StyleSheet.create({
 
   ctaEndCallButtonText: {
     color: '#ffffff',
+  },
+
+  statusText: {
+    fontSize: 16,
+    textAlign: 'center',
+  },
+
+  timerText: {
+    fontSize: 14,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
 });
