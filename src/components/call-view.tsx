@@ -1,4 +1,11 @@
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Modal,
+  Alert,
+} from 'react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   MicIcon,
@@ -12,10 +19,11 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { RTCView } from 'react-native-webrtc';
 import { CallState, CallType, ICall } from '../types';
-import { call, webRtc } from '../libs';
+import { call, socket, webRtc } from '../libs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface CallViewProps {
-  type: 'caller' | 'callee';
+  user: 'caller' | 'callee';
   callData: ICall;
 }
 
@@ -34,10 +42,14 @@ const formatDuration = (seconds: number): string => {
     .padStart(2, '0')}`;
 };
 
-export default function CallView({ type, callData }: CallViewProps) {
+export default function CallView({ user, callData }: CallViewProps) {
   const callType = callData?.callType as CallType;
 
   const { goBack, canGoBack } = useNavigation();
+
+  const safeAreaInsets = useSafeAreaInsets();
+
+  const hasSwitchToVideoRef = useRef<boolean>(false);
 
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -124,23 +136,47 @@ export default function CallView({ type, callData }: CallViewProps) {
       setIsSpeakerOn(enabled);
     });
 
+    const unsubscribeVideoCallRequest = socket.onRequestVideoCall(() => {
+      Alert.alert(
+        'Video Call Request',
+        'The other person wants to switch to video call. Accept?',
+        [
+          {
+            text: 'Decline',
+            style: 'cancel',
+            onPress: () => {
+              hasSwitchToVideoRef.current = true;
+            },
+          },
+          {
+            text: 'Accept',
+            onPress: () => {
+              hasSwitchToVideoRef.current = true;
+              webRtc.toggleCamera(true);
+            },
+          },
+        ],
+      );
+    });
+
     return () => {
       unsubscribeConnection();
       unsubscribeRemote();
       unsubscribeLocal();
 
-      if (unsubscribeMic) unsubscribeMic();
-      if (unsubscribeCamera) unsubscribeCamera();
-      if (unsubscribeSpeaker) unsubscribeSpeaker();
+      unsubscribeMic?.();
+      unsubscribeCamera?.();
+      unsubscribeSpeaker?.();
+
+      unsubscribeVideoCallRequest?.();
     };
   }, []);
 
   const getStatusText = (): string => {
     switch (connectionStatus) {
       case 'calling':
-        return type === 'caller' ? 'Calling...' : 'Incoming call...';
+        return user === 'caller' ? 'Calling...' : 'connecting...';
       case 'ringing':
-        return 'Ringing...';
       case 'connecting':
         return 'Connecting...';
       case 'connected':
@@ -154,10 +190,34 @@ export default function CallView({ type, callData }: CallViewProps) {
     }
   };
 
+  const onSwitchToVideo = () => {
+    if (!hasSwitchToVideoRef.current) {
+      const to = user === 'caller' ? callData?.calleeId : callData?.callerId;
+      socket.requestVideoCall(callData?.callId, to);
+
+      hasSwitchToVideoRef.current = true;
+    }
+
+    webRtc.toggleCamera(!isVideoEnabled);
+  };
+
+  const onToggleMicrophone = () => {
+    const microphoneState = webRtc.getMicrophoneState();
+    console.log('microphoneState', microphoneState);
+    webRtc.toggleMicrophone(!microphoneState);
+  };
+
   return (
     <View style={styles.container}>
-      <View style={styles.userCallDetailsView}>
-        <Text style={styles.largeText}>{callData.userName ?? 'Unknown'}</Text>
+      <View
+        style={[
+          styles.userCallDetailsView,
+          { marginTop: safeAreaInsets.top + 20 },
+        ]}
+      >
+        {!isVideoEnabled && (
+          <Text style={styles.largeText}>{callData.userName ?? 'Unknown'}</Text>
+        )}
         {!isCallActive && (
           <Text style={styles.statusText}>{getStatusText()}</Text>
         )}
@@ -183,7 +243,12 @@ export default function CallView({ type, callData }: CallViewProps) {
               <RTCView
                 mirror
                 streamURL={localStream?.toURL()}
-                style={styles.localVideo}
+                style={[
+                  styles.localVideo,
+                  {
+                    marginBottom: safeAreaInsets.bottom + 90,
+                  },
+                ]}
                 objectFit="cover"
               />
             )}
@@ -191,55 +256,116 @@ export default function CallView({ type, callData }: CallViewProps) {
         )}
       </View>
 
-      <View>
-        <View style={styles.ctaTopView}>
-          <View style={styles.ctaTopButtonView}>
-            <TouchableOpacity
-              onPress={() => webRtc.toggleSpeaker(!isSpeakerOn)}
-              style={styles.ctaTopButton}
-            >
-              {isSpeakerOn ? (
-                <Volume2Icon size={24} color="#000" />
-              ) : (
-                <VolumeXIcon size={24} color="#000" />
-              )}
-            </TouchableOpacity>
-            <Text style={styles.smallText}>Speaker</Text>
-          </View>
-          <View style={styles.ctaTopButtonView}>
-            <TouchableOpacity
-              onPress={() => webRtc.toggleCamera(!isVideoEnabled)}
-              style={styles.ctaTopButton}
-            >
-              {isVideoEnabled ? (
-                <VideoIcon size={24} color="#000" />
-              ) : (
-                <VideoOffIcon size={24} color="#000" />
-              )}
-            </TouchableOpacity>
-            <Text style={styles.smallText}>video</Text>
-          </View>
-          <View style={styles.ctaTopButtonView}>
-            <TouchableOpacity
-              onPress={() => webRtc.toggleMicrophone(!isMuted)}
-              style={styles.ctaTopButton}
-            >
-              {isMuted ? (
-                <MicOffIcon size={24} color="#000" />
-              ) : (
-                <MicIcon size={24} color="#000" />
-              )}
-            </TouchableOpacity>
-            <Text style={styles.smallText}>Mute</Text>
-          </View>
-        </View>
+      {isVideoEnabled ? (
+        <View
+          style={{
+            marginBottom: safeAreaInsets.bottom + 20,
+            paddingHorizontal: 20,
+            flexDirection: 'row',
+            justifyContent: 'center',
+            gap: 10,
+            width: '100%',
+          }}
+        >
+          <TouchableOpacity
+            onPress={() => webRtc.toggleSpeaker(!isSpeakerOn)}
+            style={[styles.ctaTopButton]}
+          >
+            {isSpeakerOn ? (
+              <Volume2Icon size={24} color="#000" />
+            ) : (
+              <VolumeXIcon size={24} color="#000" />
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onSwitchToVideo}
+            style={[styles.ctaTopButton]}
+          >
+            {isVideoEnabled ? (
+              <VideoIcon size={24} color="#000" />
+            ) : (
+              <VideoOffIcon size={24} color="#000" />
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onToggleMicrophone}
+            style={[styles.ctaTopButton]}
+          >
+            {isMuted ? (
+              <MicOffIcon size={24} color="#000" />
+            ) : (
+              <MicIcon size={24} color="#000" />
+            )}
+          </TouchableOpacity>
 
-        <TouchableOpacity onPress={onEndCall} style={styles.ctaEndCallButton}>
-          <View style={{ transform: [{ rotateZ: '135deg' }] }}>
-            <PhoneIcon fill={'white'} color={'#da2f25'} size={32} />
+          <TouchableOpacity
+            onPress={onEndCall}
+            style={{
+              ...styles.ctaTopButton,
+              backgroundColor: '#da2f25',
+            }}
+          >
+            <View style={{ transform: [{ rotateZ: '135deg' }] }}>
+              <PhoneIcon fill={'white'} color={'#da2f25'} size={32} />
+            </View>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View
+          style={{
+            marginBottom: safeAreaInsets.bottom + 20,
+            paddingHorizontal: 20,
+          }}
+        >
+          <View style={styles.ctaTopView}>
+            <View style={styles.ctaTopButtonView}>
+              <TouchableOpacity
+                onPress={() => webRtc.toggleSpeaker(!isSpeakerOn)}
+                style={[styles.ctaTopButton, { width: '100%' }]}
+              >
+                {isSpeakerOn ? (
+                  <Volume2Icon size={24} color="#000" />
+                ) : (
+                  <VolumeXIcon size={24} color="#000" />
+                )}
+              </TouchableOpacity>
+              <Text style={styles.smallText}>Speaker</Text>
+            </View>
+            <View style={styles.ctaTopButtonView}>
+              <TouchableOpacity
+                onPress={onSwitchToVideo}
+                style={[styles.ctaTopButton, { width: '100%' }]}
+              >
+                {isVideoEnabled ? (
+                  <VideoIcon size={24} color="#000" />
+                ) : (
+                  <VideoOffIcon size={24} color="#000" />
+                )}
+              </TouchableOpacity>
+              <Text style={styles.smallText}>video</Text>
+            </View>
+            <View style={styles.ctaTopButtonView}>
+              <TouchableOpacity
+                onPress={onToggleMicrophone}
+                style={[styles.ctaTopButton, { width: '100%' }]}
+              >
+                {isMuted ? (
+                  <MicOffIcon size={24} color="#000" />
+                ) : (
+                  <MicIcon size={24} color="#000" />
+                )}
+              </TouchableOpacity>
+              <Text style={styles.smallText}>Mute</Text>
+            </View>
           </View>
-        </TouchableOpacity>
-      </View>
+
+          <TouchableOpacity onPress={onEndCall} style={styles.ctaEndCallButton}>
+            <View style={{ transform: [{ rotateZ: '135deg' }] }}>
+              <PhoneIcon fill={'white'} color={'#da2f25'} size={32} />
+            </View>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -247,16 +373,18 @@ export default function CallView({ type, callData }: CallViewProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingLeft: 15,
-    paddingRight: 15,
+    // paddingLeft: 15,
+    // paddingRight: 15,
     flexDirection: 'column',
     justifyContent: 'space-between',
     gap: 20,
   },
 
   videoContainer: {
-    flex: 1,
-    position: 'relative',
+    // flex: 1,
+    position: 'absolute',
+    height: '100%',
+    width: '100%',
   },
 
   remoteVideo: {
@@ -264,11 +392,11 @@ const styles = StyleSheet.create({
   },
 
   localVideo: {
-    width: 120,
-    height: 160,
+    width: 140,
+    height: 180,
     position: 'absolute',
-    bottom: 20,
-    right: 10,
+    bottom: 15,
+    right: 15,
     borderRadius: 10,
     borderWidth: 2,
     borderColor: '#fff',
@@ -278,6 +406,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'column',
     gap: 10,
+    zIndex: 10,
   },
 
   ctaView: {
@@ -288,9 +417,10 @@ const styles = StyleSheet.create({
 
   ctaTopView: {
     alignItems: 'center',
+    justifyContent: 'center',
     flexDirection: 'row',
     gap: 14,
-    marginBottom: 25,
+    marginBottom: 20,
   },
 
   ctaTopButtonView: {
@@ -299,12 +429,12 @@ const styles = StyleSheet.create({
     gap: 5,
     flex: 1,
     // width: '100%',
-    // maxWidth: 120,
+    maxWidth: 100,
   },
 
   ctaTopButton: {
     height: 65,
-    width: '100%',
+    width: 75,
     backgroundColor: 'white',
     borderRadius: 20,
     alignItems: 'center',
@@ -323,7 +453,7 @@ const styles = StyleSheet.create({
   ctaEndCallButton: {
     height: 65,
     width: '100%',
-    maxWidth: 240,
+    maxWidth: 220,
     backgroundColor: '#da2f25',
     borderRadius: 50,
     alignItems: 'center',

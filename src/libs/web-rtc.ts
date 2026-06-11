@@ -6,14 +6,13 @@ import {
   MediaStream,
 } from 'react-native-webrtc';
 import { EventEmitter } from 'events';
-
 import InCallManager from 'react-native-incall-manager';
+
 import { socket } from './socket';
 import {
   CALL_STATE,
   CallType,
   CurrentFacingMode,
-  WebRTCEvents,
   WebRTCSignalPayload,
 } from '../types';
 import { Logger } from './logger';
@@ -22,59 +21,45 @@ const configuration = {
   iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
 };
 
+type PeerCloseReason = 'replaced' | 'ended' | 'failed';
+
 export class WebRTCService {
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
-  private remoteStream: MediaStream | null = null;
-
-  private webRtcLog: Logger;
-
   private emitter = new EventEmitter();
 
-  private currentFacingMode: CurrentFacingMode = 'user';
-
-  constructor(private namespace: string = 'WEB-RTC') {
-    this.webRtcLog = new Logger(this.namespace);
-  }
-
-  private isSpeakerEnabled: boolean = true;
-
-  currentCallId: string | null = null;
-  private currentPeerId: string | null = null;
-
+  private currentCallId: string | null = null;
   private myUserId: string | null = null;
 
   private callType: CallType = 'audio';
   private callState: CALL_STATE = CALL_STATE.IDLE;
+  private currentFacingMode: CurrentFacingMode = 'user';
 
   private lastProcessedAnswer = '';
-
   private processedSignals = new Set<string>();
-
   private pendingCandidates: RTCIceCandidate[] = [];
 
-  private onRemoteStream: ((stream: MediaStream) => void) | null = null;
+  constructor(private webRtcLog = new Logger('WEB-RTC')) {}
+
+  private isCurrentPeer(pc: RTCPeerConnection, callId: string) {
+    return this.peerConnection === pc && this.currentCallId === callId;
+  }
+
+  private resetCallData() {
+    this.currentCallId = null;
+    this.callType = 'audio';
+    this.currentFacingMode = 'user';
+    this.pendingCandidates = [];
+    this.lastProcessedAnswer = '';
+    this.processedSignals.clear();
+  }
 
   private setState(state: CALL_STATE) {
     if (this.callState === state) return;
 
     this.callState = state;
-
-    this.webRtcLog.info(`State changed → ${state}`);
-
+    this.webRtcLog.info(`State changed -> ${state}`);
     this.emitter.emit('callState', state);
-  }
-
-  public onCallStateChange(callback: (state: CALL_STATE) => void) {
-    this.emitter.on('callState', callback);
-
-    return () => {
-      this.emitter.off('callState', callback);
-    };
-  }
-
-  getCallState() {
-    return this.callState;
   }
 
   private async createLocalStream() {
@@ -89,22 +74,33 @@ export class WebRTCService {
     });
 
     if (this.callType === 'audio') {
-      stream.getVideoTracks().forEach(t => (t.enabled = false));
+      stream.getVideoTracks().forEach(track => {
+        track.enabled = false;
+      });
     }
 
     this.localStream = stream;
-
     this.emitter.emit('localStream', stream);
 
     return stream;
   }
 
-  public getLocalStream() {
-    return this.localStream;
+  public onCallStateChange(callback: (state: CALL_STATE) => void) {
+    this.emitter.on('callState', callback);
+
+    return () => {
+      this.emitter.off('callState', callback);
+    };
   }
 
-  public getRemoteStream() {
-    return this.remoteStream;
+  async onCallAccepted(callId: string, peerId: string) {
+    this.currentCallId = callId;
+
+    InCallManager.start({
+      media: this.callType,
+    });
+
+    this.setState(CALL_STATE.CONNECTING);
   }
 
   public onRemoteStreamChange(callback: (stream: MediaStream) => void) {
@@ -152,113 +148,97 @@ export class WebRTCService {
   }
 
   private createPeer(peerId: string, callId: string) {
-    if (
-      this.peerConnection &&
-      this.currentCallId === callId &&
-      this.callState !== CALL_STATE.ENDED &&
-      this.callState !== CALL_STATE.FAILED
-    ) {
-      this.webRtcLog.log('Reusing existing peer connection');
-      return this.peerConnection;
-    }
-
-    if (this.peerConnection) {
-      this.webRtcLog.log(
-        'Closing existing peerConnection before creating new one',
-      );
-      this.peerConnection.close();
-      this.peerConnection = null;
-      this.pendingCandidates = []; // Clear pending candidates
-    }
-
-    if (this.peerConnection && this.currentCallId === callId) {
-      this.webRtcLog.log('Peer already exists for this call');
-      return this.peerConnection;
-    }
+    this.closePeerConnection('replaced');
 
     const pc = new RTCPeerConnection(configuration);
+    const stream = this.localStream;
 
-    this.currentPeerId = peerId;
+    this.peerConnection = pc;
     this.currentCallId = callId;
 
-    // add tracks ONCE
-    this.localStream?.getTracks().forEach(track => {
-      const hasTrack = pc.getSenders().some(sender => sender.track === track);
-      if (!hasTrack) {
-        pc.addTrack(track, this.localStream!);
-      }
-    });
+    if (!stream) {
+      this.webRtcLog.warn('Creating peer connection without a local stream');
+    } else {
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    }
 
-    pc.onicecandidate = event => {
-      if (!event.candidate) return;
+    pc.onicecandidate = ({ candidate }) => {
+      if (!candidate || !this.isCurrentPeer(pc, callId)) return;
 
       socket.sendSignal({
         to: peerId,
         from: this.getMyUserId(),
         callId,
         type: 'candidate',
-        candidate: event.candidate,
+        candidate,
       });
     };
 
-    pc.ontrack = event => {
-      const [stream] = event.streams;
-      if (!stream) return;
+    pc.ontrack = ({ streams }) => {
+      if (!this.isCurrentPeer(pc, callId)) return;
 
-      this.remoteStream = stream;
-      this.onRemoteStream?.(stream);
-      this.emitter.emit('remoteStream', stream);
-    };
-
-    pc.onconnectionstatechange = () => {
-      this.webRtcLog.info(`Connection state → ${pc.connectionState}`);
-
-      switch (pc.connectionState) {
-        case 'new':
-          break;
-
-        case 'connecting':
-          this.setState(CALL_STATE.CONNECTING);
-          break;
-
-        case 'connected':
-          this.setState(CALL_STATE.CONNECTED);
-          break;
-
-        case 'disconnected':
-          this.setState(CALL_STATE.CONNECTING);
-          break;
-
-        case 'failed':
-          this.setState(CALL_STATE.FAILED);
-          this.safeCleanup();
-          break;
-
-        case 'closed':
-          this.setState(CALL_STATE.ENDED);
-          socket.endCall(callId, 'ended');
-          break;
+      const [remoteStream] = streams;
+      if (remoteStream) {
+        this.emitter.emit('remoteStream', remoteStream);
       }
     };
 
-    this.peerConnection = pc;
+    pc.onconnectionstatechange = () => {
+      if (!this.isCurrentPeer(pc, callId)) return;
+
+      this.webRtcLog.info(`Connection state -> ${pc.connectionState}`);
+
+      if (pc.connectionState === 'connected') {
+        this.setState(CALL_STATE.CONNECTED);
+      }
+
+      if (
+        pc.connectionState === 'connecting' ||
+        pc.connectionState === 'disconnected'
+      ) {
+        this.setState(CALL_STATE.CONNECTING);
+      }
+
+      if (pc.connectionState === 'failed') {
+        this.setState(CALL_STATE.FAILED);
+        this.safeCleanup('failed');
+      }
+
+      if (pc.connectionState === 'closed') {
+        this.setState(CALL_STATE.ENDED);
+      }
+    };
+
     return pc;
+  }
+
+  private closePeerConnection(reason: PeerCloseReason = 'ended') {
+    const pc = this.peerConnection;
+    if (!pc) return;
+
+    this.webRtcLog.log(`Closing peerConnection: ${reason}`);
+
+    pc.onicecandidate = null;
+    pc.ontrack = null;
+    pc.onconnectionstatechange = null;
+    pc.close();
+
+    this.peerConnection = null;
   }
 
   async startCall(callId: string, calleeId: string, type: CallType) {
     try {
-      if (this.peerConnection) this.safeCleanup();
+      this.safeCleanup();
 
       this.callType = type;
       this.setState(CALL_STATE.CALLING);
-
-      InCallManager.start({ media: 'audio' });
+      InCallManager.start({ media: type });
 
       await this.createLocalStream();
 
       const pc = this.createPeer(calleeId, callId);
-
       const offer = await pc.createOffer();
+
       await pc.setLocalDescription(offer);
 
       socket.sendSignal({
@@ -270,108 +250,74 @@ export class WebRTCService {
       });
 
       return true;
-    } catch (e) {
-      console.error(e);
-      this.safeCleanup();
+    } catch (error) {
+      this.webRtcLog.error('Failed to start call', error);
+      this.safeCleanup('failed');
       return false;
     }
   }
 
   async handleSignal(payload: WebRTCSignalPayload) {
-    const { callId, type, sdp, from } = payload;
+    const { callId, type, sdp, from, candidate } = payload;
 
-    if (from === this.myUserId) {
-      this.webRtcLog.log('Ignoring signal from self');
+    if (from === this.myUserId) return;
+
+    if (type !== 'candidate' && this.hasProcessedSignal(callId, type, sdp)) {
       return;
     }
 
-    // const signalKey = `${callId}-${type}-${sdp?.sdp?.substring(0, 50)}`;
-    // if (this.processedSignals.has(signalKey)) {
-    //   this.webRtcLog.log('Ignoring duplicate signal');
-    //   return;
-    // }
-    // this.processedSignals.add(signalKey);
-
-    // // Clear old keys after 5 seconds
-    // setTimeout(() => this.processedSignals.delete(signalKey), 5000);
-
-    // if (this.currentCallId && this.currentCallId !== callId) {
-    //   return; // ignore old calls
-    // }
-
-    if (type !== 'candidate') {
-      const signalKey = `${callId}-${type}-${sdp?.sdp?.substring(0, 100)}`;
-      if (this.processedSignals.has(signalKey)) {
-        this.webRtcLog.log('Ignoring duplicate signal');
-        return;
-      }
-      this.processedSignals.add(signalKey);
-      setTimeout(() => this.processedSignals.delete(signalKey), 5000);
-    }
-
-    if (type === 'offer') {
-      if (this.callState === CALL_STATE.CALLING) {
-        this.webRtcLog.warn('Received offer while calling - ignoring');
-        return;
-      }
+    if (type === 'offer' && this.callState === CALL_STATE.CALLING) {
+      this.webRtcLog.warn('Received offer while already calling');
+      return;
     }
 
     if (this.currentCallId && this.currentCallId !== callId) {
-      if (this.callState === CALL_STATE.CONNECTED) {
-        this.webRtcLog.log(
-          'Ignoring signal for different call ID - already connected',
-        );
-        return;
-      }
-      this.webRtcLog.log(
-        `Switching from call ${this.currentCallId} to ${callId}`,
-      );
+      if (this.callState === CALL_STATE.CONNECTED) return;
       this.safeCleanup();
     }
 
     switch (type) {
       case 'offer':
-        return this.handleOffer(callId, from!, payload.sdp, this.callType);
-
+        return this.handleOffer(callId, from!, sdp, this.callType);
       case 'answer':
-        return this.handleAnswer(callId, payload.sdp);
-
+        return this.handleAnswer(callId, sdp);
       case 'candidate':
-        return this.handleCandidate(callId, payload.candidate);
+        return this.handleCandidate(callId, candidate);
     }
   }
 
-  async onCallAccepted(callId: string, peerId: string) {
-    this.currentCallId = callId;
-    this.currentPeerId = peerId;
+  private hasProcessedSignal(callId: string, type: string, sdp: any) {
+    const key = `${callId}-${type}-${sdp?.sdp?.slice(0, 100) ?? ''}`;
 
-    InCallManager.start({
-      media: this.callType === 'audio' ? 'audio' : 'video',
-    });
+    if (this.processedSignals.has(key)) {
+      this.webRtcLog.log('Ignoring duplicate signal');
+      return true;
+    }
 
-    this.setState(CALL_STATE.CONNECTING);
+    this.processedSignals.add(key);
+    setTimeout(() => this.processedSignals.delete(key), 5000);
+
+    return false;
   }
 
-  async handleOffer(callId: string, to: string, sdp: any, type: CallType) {
+  async handleOffer(callId: string, peerId: string, sdp: any, type: CallType) {
     try {
       this.callType = type;
-      this.setState(CALL_STATE.RINGING);
-
-      InCallManager.start({ media: 'audio' });
+      this.setState(CALL_STATE.CONNECTING);
+      InCallManager.start({ media: type });
 
       await this.createLocalStream();
 
-      const pc = this.createPeer(to, callId);
+      const pc = this.createPeer(peerId, callId);
 
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-
       await this.flushCandidates();
 
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
       socket.sendSignal({
-        to: to,
+        to: peerId,
         from: this.getMyUserId(),
         callId,
         type: 'answer',
@@ -379,50 +325,95 @@ export class WebRTCService {
       });
 
       return true;
-    } catch (e) {
-      console.error(e);
-      this.safeCleanup();
+    } catch (error) {
+      this.webRtcLog.error('Failed to handle offer', error);
+      this.safeCleanup('failed');
       return false;
     }
   }
 
   async handleAnswer(callId: string, sdp: any) {
+    const pc = this.peerConnection;
+    if (!pc || this.currentCallId !== callId) return;
+
+    const fingerprint = sdp?.sdp?.slice(0, 200) ?? '';
+    if (this.lastProcessedAnswer === fingerprint) return;
+
+    if (pc.signalingState !== 'have-local-offer') {
+      this.webRtcLog.log('Ignoring answer:', pc.signalingState);
+      return;
+    }
+
     try {
-      // Create a fingerprint of this answer
-      const answerFingerprint = sdp?.sdp?.substring(0, 200) || '';
-
-      if (this.lastProcessedAnswer === answerFingerprint) {
-        this.webRtcLog.log('Duplicate answer detected, ignoring');
-        return;
-      }
-
-      if (!this.peerConnection) return;
-      if (this.currentCallId !== callId) return;
-
-      const signalingState = this.peerConnection.signalingState;
-      this.webRtcLog.log(`Handling answer, signaling state: ${signalingState}`);
-
-      if (signalingState !== 'have-local-offer') {
-        this.webRtcLog.log('Ignoring answer:', signalingState);
-        return;
-      }
-
-      this.lastProcessedAnswer = answerFingerprint;
-
-      await this.peerConnection.setRemoteDescription(
-        new RTCSessionDescription(sdp),
-      );
-
+      this.lastProcessedAnswer = fingerprint;
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
       await this.flushCandidates();
-      this.setState(CALL_STATE.CONNECTING);
-    } catch (e) {
-      console.error(e);
+    } catch (error) {
+      this.webRtcLog.error('Failed to handle answer', error);
     }
   }
 
-  public toggleSpeaker(enabled: boolean) {
-    this.isSpeakerEnabled = enabled;
+  async handleCandidate(callId: string, candidate: any) {
+    if (!candidate || this.currentCallId !== callId) return;
 
+    const pc = this.peerConnection;
+    const ice = new RTCIceCandidate(candidate);
+
+    if (!pc || !pc.remoteDescription) {
+      this.pendingCandidates.push(ice);
+      return;
+    }
+
+    try {
+      await pc.addIceCandidate(ice);
+    } catch (error) {
+      this.webRtcLog.error('ICE candidate error', error);
+    }
+  }
+
+  private async flushCandidates() {
+    const pc = this.peerConnection;
+    if (!pc || !pc.remoteDescription) return;
+
+    while (this.pendingCandidates.length > 0) {
+      const candidate = this.pendingCandidates.shift();
+      if (candidate) await pc.addIceCandidate(candidate);
+    }
+  }
+
+  async switchCamera() {
+    const stream = this.localStream;
+    const pc = this.peerConnection;
+    if (!stream) return;
+
+    const [oldTrack] = stream.getVideoTracks();
+    if (!oldTrack) return;
+
+    const nextFacingMode =
+      this.currentFacingMode === 'user' ? 'environment' : 'user';
+
+    const newStream = await mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: nextFacingMode },
+    });
+
+    const [newTrack] = newStream.getVideoTracks();
+    if (!newTrack) return;
+
+    newTrack.enabled = oldTrack.enabled;
+
+    const sender = pc?.getSenders().find(s => s.track === oldTrack);
+    await sender?.replaceTrack(newTrack);
+
+    stream.removeTrack(oldTrack);
+    oldTrack.stop();
+    stream.addTrack(newTrack);
+
+    this.currentFacingMode = nextFacingMode;
+    this.emitter.emit('localStream', stream);
+  }
+
+  public toggleSpeaker(enabled: boolean) {
     if (enabled) {
       InCallManager.setForceSpeakerphoneOn(true);
       InCallManager.setSpeakerphoneOn(true);
@@ -446,7 +437,6 @@ export class WebRTCService {
     this.emitter.emit('microphoneState', enabled);
   }
 
-  // Toggle camera (video track)
   public toggleCamera(enabled: boolean) {
     if (!this.localStream) return;
 
@@ -458,45 +448,6 @@ export class WebRTCService {
     this.emitter.emit('cameraState', enabled);
   }
 
-  // Switch camera (front/back)
-  public async switchCamera() {
-    if (!this.localStream) return;
-
-    const videoTracks = this.localStream.getVideoTracks();
-    if (videoTracks.length === 0) return;
-
-    // Store current state
-    const wasEnabled = videoTracks[0].enabled;
-
-    // Stop current tracks
-    videoTracks.forEach(track => {
-      track.stop();
-      this.localStream?.removeTrack(track);
-    });
-
-    // Get new stream with opposite camera
-    const constraints = {
-      audio: false,
-      video: {
-        facingMode: this.currentFacingMode === 'user' ? 'environment' : 'user',
-      },
-    };
-
-    const newStream = await mediaDevices.getUserMedia(constraints);
-    const newVideoTrack = newStream.getVideoTracks()[0];
-    newVideoTrack.enabled = wasEnabled;
-
-    this.localStream.addTrack(newVideoTrack);
-
-    // Toggle facing mode
-    this.currentFacingMode =
-      this.currentFacingMode === 'user' ? 'environment' : 'user';
-
-    this.emitter.emit('localStream', this.localStream);
-    this.webRtcLog.log(`Switched to ${this.currentFacingMode} camera`);
-  }
-
-  // Get current track states
   public getMicrophoneState(): boolean {
     if (!this.localStream) return false;
     const audioTracks = this.localStream.getAudioTracks();
@@ -509,70 +460,39 @@ export class WebRTCService {
     return videoTracks.length > 0 ? videoTracks[0].enabled : false;
   }
 
-  setMyUserId(userId: string) {
-    this.webRtcLog.log('Setting user ID:', userId);
-    this.myUserId = userId;
-  }
-
-  private getMyUserId(): string {
-    if (!this.myUserId) {
-      throw new Error('User ID not set');
-    }
-    return this.myUserId;
-  }
-
-  async handleCandidate(callId: string, candidate: any) {
-    if (!this.peerConnection) return;
-    if (this.currentCallId !== callId) return;
-
-    try {
-      const ice = new RTCIceCandidate(candidate);
-
-      if (!this.peerConnection.remoteDescription) {
-        this.pendingCandidates.push(ice);
-        return;
-      }
-
-      await this.peerConnection.addIceCandidate(ice);
-    } catch (e) {
-      this.webRtcLog.error('ICE error', e);
-    }
-  }
-
-  private async flushCandidates() {
-    if (!this.peerConnection) return;
-
-    while (this.pendingCandidates.length) {
-      const c = this.pendingCandidates.shift();
-      if (c) await this.peerConnection.addIceCandidate(c);
-    }
-  }
-
-  private safeCleanup() {
+  private safeCleanup(reason: PeerCloseReason = 'ended') {
     this.webRtcLog.log('Cleanup');
 
-    try {
-      this.peerConnection?.close();
-    } catch {}
+    this.closePeerConnection(reason);
 
-    this.localStream?.getTracks().forEach(t => t.stop());
-
-    this.peerConnection = null;
+    this.localStream?.getTracks().forEach(track => track.stop());
     this.localStream = null;
-    this.remoteStream = null;
 
-    this.pendingCandidates = [];
-
-    this.currentCallId = null;
-    this.currentPeerId = null;
-
+    this.resetCallData();
     this.setState(CALL_STATE.ENDED);
 
     InCallManager.stop();
   }
 
   endCall() {
+    if (this.currentCallId) {
+      socket.endCall(this.currentCallId, 'ended');
+    }
+
     this.safeCleanup();
+  }
+
+  setMyUserId(userId: string) {
+    this.webRtcLog.log('Setting user ID:', userId);
+    this.myUserId = userId;
+  }
+
+  private getMyUserId() {
+    if (!this.myUserId) {
+      throw new Error('User ID not set');
+    }
+
+    return this.myUserId;
   }
 }
 

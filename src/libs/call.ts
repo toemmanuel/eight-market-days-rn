@@ -51,11 +51,7 @@ class CallKeep {
     }
   >();
 
-  private callKeepLogger: Logger;
-
-  private constructor(private namespace: string = 'Call') {
-    this.callKeepLogger = new Logger(this.namespace);
-  }
+  private constructor(private callKeepLogger = new Logger('CALL-KEEP')) {}
 
   static getInstance(): CallKeep {
     if (!CallKeep.instance) {
@@ -113,20 +109,6 @@ class CallKeep {
         this.callKeepLogger.log('Foreground service is running');
         // Keep service alive
         return new Promise(() => {});
-      });
-
-      // Display persistent notification
-      await notifee.displayNotification({
-        id: 'foreground_service',
-        title: 'Call Service',
-        body: 'Ready for calls',
-        android: {
-          channelId: 'call_service',
-          asForegroundService: true,
-          importance: AndroidImportance.LOW,
-          ongoing: true,
-          autoCancel: false,
-        },
       });
 
       this.callKeepLogger.log('Foreground service setup complete');
@@ -396,11 +378,7 @@ class Call {
   private callData: IIncomingCallData | null = null;
   private callType: CallType | undefined = undefined;
 
-  private callLogger: Logger;
-
-  constructor(private namespace: string = 'CALL') {
-    this.callLogger = new Logger(this.namespace);
-  }
+  constructor(private callLogger = new Logger('CALL')) {}
 
   async init() {
     await callKeep.setup();
@@ -408,11 +386,11 @@ class Call {
 
     callKeep.onAnswer(callId => {
       this.acceptCall(callId);
-      webRtc.startCall(
-        callId,
-        this.callData?.callerId || '',
-        this.callType || 'audio',
-      );
+      // webRtc.startCall(
+      //   callId,
+      //   this.callData?.callerId || '',
+      //   this.callType || 'audio',
+      // );
     });
 
     callKeep.onEnd((callId, reason = 'ended') => {
@@ -432,10 +410,6 @@ class Call {
     this.callType = payload.callType;
     callKeep.startCall(payload);
     socket.initiateCall(payload);
-  }
-
-  startCall(data: StartCallPayload) {
-    callKeep.startCall(data);
   }
 
   acceptCall(callId: string) {

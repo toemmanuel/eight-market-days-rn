@@ -1,6 +1,6 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { CalleeScreen, CallerScreen, InitScreen } from '../screens';
+import { InitScreen, CallScreen } from '../screens';
 
 const { Screen, Navigator } = createNativeStackNavigator();
 
@@ -12,8 +12,7 @@ export default function RootNavigator() {
       }}
     >
       <Screen name="Init" component={InitScreen} />
-      <Screen name="Caller" component={CallerScreen} />
-      <Screen name="Callee" component={CalleeScreen} />
+      <Screen name="Call" component={CallScreen} />
     </Navigator>
   );
 }

@@ -88,3 +88,7 @@ export type WebRTCEvents = {
   microphoneState: [boolean];
   cameraState: [boolean];
 };
+
+export type NavigationParams = {
+  Call: { call: IIncomingCallData; user: string };
+};

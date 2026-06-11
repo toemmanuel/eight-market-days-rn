@@ -1,4 +1,5 @@
 import { io, Socket as IOSocket } from 'socket.io-client';
+import DeviceInfo from 'react-native-device-info';
 import {
   IIncomingCallData,
   InitiateCallPayload,
@@ -13,10 +14,9 @@ import { Logger } from './logger';
 class SocketService {
   socket: IOSocket;
 
-  navigation: Omit<
-    NavigationProp<ReactNavigation.RootParamList>,
-    'getState'
-  > | null = null;
+  navigation: Omit<NavigationProp<any>, 'getState'> | null = null;
+
+  private incomingCall: IIncomingCallData | null = null;
 
   currentRoute: string | undefined = undefined;
 
@@ -24,15 +24,14 @@ class SocketService {
 
   private activeCallId: string | null = null;
 
-  private socketLogger: Logger;
+  private androidUrl = DeviceInfo.isEmulatorSync()
+    ? 'http://10.0.2.2:3000'
+    : 'http://192.168.0.223:3000';
 
   platform = Platform;
-  url =
-    Platform.OS === 'ios' ? 'http://localhost:3000' : 'http://10.0.2.2:3000';
+  url = Platform.OS === 'ios' ? 'http://localhost:3000' : this.androidUrl;
 
-  constructor(private namespace: string = 'WEB-SOCKET') {
-    this.socketLogger = new Logger(this.namespace);
-
+  constructor(private socketLogger = new Logger('WEB-SOCKET')) {
     this.socket = io(this.url, {
       autoConnect: false,
       transports: ['websocket'],
@@ -59,7 +58,7 @@ class SocketService {
           // 1. Set active call
           call.setActiveCall(data.callId);
 
-          await webRtc.onCallAccepted?.(data.callId, data.calleeId);
+          // await webRtc.onCallAccepted?.(data.callId, data.calleeId);
         } catch (err) {
           console.error('Error handling call acceptance:', err);
         }
@@ -91,46 +90,26 @@ class SocketService {
     );
 
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
+      this.socketLogger.log('payload::', payload);
+      this.socketLogger.log('My ID::', this.myUserId);
       if (payload.from === this.myUserId) {
-        this.socketLogger.log('⏭️ Ignoring signal from self:', payload.type);
         return;
       }
 
       if (!payload.callId) return;
 
-      this.socketLogger.log(
-        `[SIGNAL RECEIVED] ${payload.type} at ${Date.now()}`,
-        {
-          callId: payload.callId,
-          activeCallId: this.activeCallId,
-          from: payload.from,
-          to: payload.to,
-          myId: this.myUserId,
-          hasSdp: !!payload.sdp,
-          hasCandidate: !!payload.candidate,
-        },
-      );
-
-      // 1. Ignore old calls immediately
       if (this.activeCallId && payload.callId !== this.activeCallId) {
-        this.socketLogger.log('Ignoring stale signal:', payload.type);
         return;
       }
 
       if (!this.activeCallId) {
-        this.socketLogger.log(
-          'Setting activeCallId from signal:',
-          payload.callId,
-        );
         this.activeCallId = payload.callId;
       }
 
-      // 2. Validate payload integrity
       if (payload.type === 'answer' && !payload.sdp) return;
 
       if (payload.type === 'candidate' && !payload.candidate) return;
 
-      // 3. Forward safely to WebRTC layer
       await webRtc.handleSignal(payload);
     });
   }
@@ -146,22 +125,41 @@ class SocketService {
     return this.myUserId;
   }
 
-  // call:initiate
   initiateCall(data: InitiateCallPayload) {
     this.socket.emit('call:initiate', data);
-    this.navigation?.navigate('Caller', data);
+    this.navigation?.navigate('Call', { call: data, user: 'caller' });
+    webRtc.startCall(
+      data.callId,
+      data?.calleeId || '',
+      data.callType || 'audio',
+    );
   }
 
-  // backend: call:accept
-  acceptCall(data: { callId: string }) {
+  async acceptCall(data: { callId: string }) {
+    const calleeId = this.incomingCall?.calleeId as string;
+    this.navigation?.navigate('Call', {
+      call: { ...data, ...this.incomingCall },
+      user: 'callee',
+    });
     this.socket.emit('call:accept', data);
-    this.navigation?.navigate('Callee', data);
+    await webRtc.onCallAccepted?.(data.callId, calleeId);
   }
 
-  // backend: call:end
   endCall(callId: string, reason: string = 'ended') {
     this.cleanupCall();
     this.socket.emit('call:end', { callId, reason });
+  }
+
+  requestVideoCall(callId: string, to: string) {
+    this.socket.emit('call:request-video', { callId, to });
+  }
+
+  onRequestVideoCall(callback: () => void) {
+    this.socket.on('call:requesting-video', callback);
+
+    return () => {
+      this.socket.off('call:requesting-video', callback);
+    };
   }
 
   sendSignal(data: WebRTCSignalPayload) {
@@ -184,6 +182,7 @@ class SocketService {
   onIncomingCall(callback: (data: IIncomingCallData) => void) {
     this.socket.on('call:incoming', (data: IIncomingCallData) => {
       this.activeCallId = data.callId;
+      this.incomingCall = data;
       callback(data);
     });
   }
@@ -192,6 +191,7 @@ class SocketService {
     this.socketLogger.log('🧹 Cleaning socket call state');
 
     this.activeCallId = null;
+    this.incomingCall = null;
   }
 }
 
