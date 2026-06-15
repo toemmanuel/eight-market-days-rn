@@ -52,7 +52,7 @@ export default function InitScreen() {
           <Text>Connect</Text>
         </TouchableOpacity>
       </View>
-      <View style={{ height: 30 }} />
+      <View style={{ height: 15 }} />
       <TouchableOpacity
         hitSlop={{
           top: 10,

@@ -97,6 +97,7 @@ export class WebRTCService {
   }
 
   async onCallAccepted(callId: string, peerId: string) {
+    console.log('Pending call::', this.pendingCallData);
     if (!this.pendingCallData || this.pendingCallData.callId !== callId) {
       this.webRtcLog.warn('No pending call to accept');
       return;
@@ -343,7 +344,6 @@ export class WebRTCService {
   ) {
     this.pendingCallData = { callId, peerId, sdp, callType };
     this.setState(CALL_STATE.RINGING);
-    this.emitter.emit('incomingCall', { callId, peerId, callType });
   }
 
   async handleAnswer(callId: string, sdp: any) {

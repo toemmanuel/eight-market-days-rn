@@ -55,10 +55,7 @@ class SocketService {
         this.activeCallId = data.callId;
 
         try {
-          // 1. Set active call
           call.setActiveCall(data.callId);
-
-          // await webRtc.onCallAccepted?.(data.callId, data.calleeId);
         } catch (err) {
           console.error('Error handling call acceptance:', err);
         }
@@ -90,6 +87,8 @@ class SocketService {
     );
 
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
+      if (!payload) return;
+
       if (payload.from === this.myUserId) {
         return;
       }
@@ -123,10 +122,11 @@ class SocketService {
     return this.myUserId;
   }
 
-  initiateCall(data: InitiateCallPayload) {
+  async initiateCall(data: InitiateCallPayload) {
     this.socket.emit('call:initiate', data);
     this.navigation?.navigate('Call', { call: data, user: 'caller' });
-    webRtc.startCall(
+
+    await webRtc.startCall(
       data.callId,
       data?.callerId,
       data?.calleeId || '',
@@ -135,7 +135,6 @@ class SocketService {
   }
 
   async acceptCall(data: { callId: string }) {
-    const calleeId = this.incomingCall?.calleeId as string;
     const callerId = this.incomingCall?.callerId as string;
     this.navigation?.navigate('Call', {
       call: { ...data, ...this.incomingCall },
