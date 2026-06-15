@@ -13,7 +13,6 @@ import {
   CALL_STATE,
   CallType,
   CurrentFacingMode,
-  PendingCall,
   WebRTCSignalPayload,
 } from '../types';
 import { Logger } from './logger';
@@ -31,8 +30,6 @@ export class WebRTCService {
 
   private currentCallId: string | null = null;
   private myUserId: string | null = null;
-
-  private pendingCallData: PendingCall | null = null;
 
   private callType: CallType = 'audio';
   private callState: CALL_STATE = CALL_STATE.IDLE;
@@ -97,40 +94,15 @@ export class WebRTCService {
   }
 
   async onCallAccepted(callId: string, peerId: string) {
-    if (!this.pendingCallData || this.pendingCallData.callId !== callId) {
-      this.webRtcLog.warn('No pending call to accept');
-      return;
-    }
+    this.currentCallId = callId;
 
-    const { sdp, callType } = this.pendingCallData;
+    InCallManager.start({
+      media: this.callType,
+    });
 
-    try {
-      this.callType = callType;
-      this.setState(CALL_STATE.CONNECTING);
-      InCallManager.start({ media: callType });
+    const connected = this.peerConnection?.connectionState === 'connected';
 
-      await this.createLocalStream();
-      const pc = this.createPeer(peerId, callId);
-      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-
-      await this.flushCandidates();
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      socket.sendSignal({
-        to: peerId,
-        from: this.getMyUserId(),
-        callId,
-        type: 'answer',
-        sdp: answer,
-      });
-
-      this.pendingCallData = null;
-    } catch (error) {
-      this.webRtcLog.error('Failed to accept call', error);
-      this.safeCleanup('failed');
-    }
+    this.setState(connected ? CALL_STATE.CONNECTED : CALL_STATE.CONNECTING);
   }
 
   public onRemoteStreamChange(callback: (stream: MediaStream) => void) {
@@ -256,12 +228,7 @@ export class WebRTCService {
     this.peerConnection = null;
   }
 
-  async startCall(
-    callId: string,
-    callerId: string,
-    calleeId: string,
-    type: CallType,
-  ) {
+  async startCall(callId: string, calleeId: string, type: CallType) {
     try {
       this.safeCleanup();
 
@@ -278,7 +245,7 @@ export class WebRTCService {
 
       socket.sendSignal({
         to: calleeId,
-        from: callerId,
+        from: this.getMyUserId(),
         callId,
         type: 'offer',
         sdp: offer,
@@ -335,15 +302,36 @@ export class WebRTCService {
     return false;
   }
 
-  async handleOffer(
-    callId: string,
-    peerId: string,
-    sdp: any,
-    callType: CallType,
-  ) {
-    this.pendingCallData = { callId, peerId, sdp, callType };
-    this.setState(CALL_STATE.RINGING);
-    this.emitter.emit('incomingCall', { callId, peerId, callType });
+  async handleOffer(callId: string, peerId: string, sdp: any, type: CallType) {
+    try {
+      this.callType = type;
+      this.setState(CALL_STATE.CONNECTING);
+      InCallManager.start({ media: type });
+
+      await this.createLocalStream();
+
+      const pc = this.createPeer(peerId, callId);
+
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      await this.flushCandidates();
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socket.sendSignal({
+        to: peerId,
+        from: this.getMyUserId(),
+        callId,
+        type: 'answer',
+        sdp: answer,
+      });
+
+      return true;
+    } catch (error) {
+      this.webRtcLog.error('Failed to handle offer', error);
+      this.safeCleanup('failed');
+      return false;
+    }
   }
 
   async handleAnswer(callId: string, sdp: any) {
@@ -496,14 +484,7 @@ export class WebRTCService {
     this.safeCleanup();
   }
 
-  setMyUserId(userId: string, force: boolean = false) {
-    if (this.myUserId && this.myUserId !== userId && !force) {
-      this.webRtcLog.error(
-        `Attempted to change user ID from ${this.myUserId} to ${userId}. Ignoring.`,
-      );
-      return; // Or throw an error
-    }
-
+  setMyUserId(userId: string) {
     this.webRtcLog.log('Setting user ID:', userId);
     this.myUserId = userId;
   }

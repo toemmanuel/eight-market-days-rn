@@ -80,6 +80,13 @@ export type CallState = `${CALL_STATE}`;
 
 export type CurrentFacingMode = 'user' | 'environment';
 
+export interface PendingCall {
+  callId: string;
+  peerId: string;
+  sdp: any;
+  callType: CallType;
+}
+
 export type WebRTCEvents = {
   callState: [CallState];
   remoteStream: [MediaStream];

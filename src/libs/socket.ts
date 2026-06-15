@@ -90,8 +90,6 @@ class SocketService {
     );
 
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
-      this.socketLogger.log('payload::', payload);
-      this.socketLogger.log('My ID::', this.myUserId);
       if (payload.from === this.myUserId) {
         return;
       }
@@ -115,10 +113,10 @@ class SocketService {
   }
 
   connect(userId: string) {
-    this.socket.io.opts.query = { userId };
-    this.socket.connect();
     this.myUserId = userId;
     webRtc.setMyUserId(userId);
+    this.socket.io.opts.query = { userId };
+    this.socket.connect();
   }
 
   getMyUserId() {
@@ -130,6 +128,7 @@ class SocketService {
     this.navigation?.navigate('Call', { call: data, user: 'caller' });
     webRtc.startCall(
       data.callId,
+      data?.callerId,
       data?.calleeId || '',
       data.callType || 'audio',
     );
@@ -137,12 +136,13 @@ class SocketService {
 
   async acceptCall(data: { callId: string }) {
     const calleeId = this.incomingCall?.calleeId as string;
+    const callerId = this.incomingCall?.callerId as string;
     this.navigation?.navigate('Call', {
       call: { ...data, ...this.incomingCall },
       user: 'callee',
     });
     this.socket.emit('call:accept', data);
-    await webRtc.onCallAccepted?.(data.callId, calleeId);
+    await webRtc.onCallAccepted?.(data.callId, callerId);
   }
 
   endCall(callId: string, reason: string = 'ended') {
@@ -185,6 +185,15 @@ class SocketService {
       this.incomingCall = data;
       callback(data);
     });
+  }
+
+  onCallAccepted(callback: () => void) {
+    this.socket.on(
+      'call:accepted',
+      async (data: { callId: string; calleeId: string }) => {
+        callback?.();
+      },
+    );
   }
 
   private cleanupCall() {

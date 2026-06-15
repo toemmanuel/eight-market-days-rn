@@ -51,6 +51,8 @@ export default function CallView({ user, callData }: CallViewProps) {
 
   const hasSwitchToVideoRef = useRef<boolean>(false);
 
+  const timerStartedRef = useRef(false);
+
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
@@ -79,7 +81,7 @@ export default function CallView({ user, callData }: CallViewProps) {
   };
 
   useEffect(() => {
-    if (connectionStatus === 'connected') {
+    if (connectionStatus === 'connected' && remoteStream) {
       startTimeRef.current = Date.now();
       timerRef.current = setInterval(() => {
         if (startTimeRef.current) {
@@ -107,9 +109,12 @@ export default function CallView({ user, callData }: CallViewProps) {
         timerRef.current = null;
       }
     };
-  }, [connectionStatus]);
+  }, [connectionStatus, remoteStream]);
 
   useEffect(() => {
+    const isMuteMic = webRtc.getMicrophoneState();
+    setIsMuted(isMuteMic);
+
     const unsubscribeConnection = webRtc.onCallStateChange(connectionState => {
       setConnectionStatus(connectionState);
     });
