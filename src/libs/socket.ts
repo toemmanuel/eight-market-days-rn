@@ -1,6 +1,7 @@
 import { io, Socket as IOSocket } from 'socket.io-client';
 import DeviceInfo from 'react-native-device-info';
 import {
+  CallType,
   IIncomingCallData,
   InitiateCallPayload,
   WebRTCSignalPayload,
@@ -26,7 +27,7 @@ class SocketService {
 
   private androidUrl = DeviceInfo.isEmulatorSync()
     ? 'http://10.0.2.2:3000'
-    : 'http://192.168.0.223:3000';
+    : 'http://172.20.10.2:3000';
 
   platform = Platform;
   url = Platform.OS === 'ios' ? 'http://localhost:3000' : this.androidUrl;
@@ -49,7 +50,12 @@ class SocketService {
 
     this.socket.on(
       'call:accepted',
-      async (data: { callId: string; calleeId: string }) => {
+      async (data: {
+        callId: string;
+        calleeId: string;
+        callerId: string;
+        callType: CallType;
+      }) => {
         this.socketLogger.log('✅ Call accepted:', data);
 
         this.activeCallId = data.callId;
@@ -87,6 +93,8 @@ class SocketService {
     );
 
     this.socket.on('webrtc:signal', async (payload: WebRTCSignalPayload) => {
+      console.log('Payload::', payload);
+
       if (!payload) return;
 
       if (payload.from === this.myUserId) {
@@ -125,7 +133,6 @@ class SocketService {
   async initiateCall(data: InitiateCallPayload) {
     this.socket.emit('call:initiate', data);
     this.navigation?.navigate('Call', { call: data, user: 'caller' });
-
     await webRtc.startCall(
       data.callId,
       data?.callerId,
@@ -141,6 +148,9 @@ class SocketService {
       user: 'callee',
     });
     this.socket.emit('call:accept', data);
+
+    console.log('Accept Call::', data);
+
     await webRtc.onCallAccepted?.(data.callId, callerId);
   }
 

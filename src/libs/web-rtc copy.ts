@@ -24,13 +24,6 @@ const configuration = {
 
 type PeerCloseReason = 'replaced' | 'ended' | 'failed';
 
-type CallOffer = {
-  callId: string;
-  peerId: string;
-  sdp: any;
-  callType: CallType;
-};
-
 export class WebRTCService {
   private peerConnection: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
@@ -45,11 +38,9 @@ export class WebRTCService {
   private callState: CALL_STATE = CALL_STATE.IDLE;
   private currentFacingMode: CurrentFacingMode = 'user';
 
-  private candidateIntervalId: number | null = null;
-
   private lastProcessedAnswer = '';
   private processedSignals = new Set<string>();
-  private candidate: RTCIceCandidate | null = null;
+  private pendingCandidates: RTCIceCandidate[] = [];
 
   constructor(private webRtcLog = new Logger('WEB-RTC')) {}
 
@@ -61,10 +52,9 @@ export class WebRTCService {
     this.currentCallId = null;
     this.callType = 'audio';
     this.currentFacingMode = 'user';
-    this.candidate = null;
+    this.pendingCandidates = [];
     this.lastProcessedAnswer = '';
     this.processedSignals.clear();
-    if (this.candidateIntervalId) clearInterval(this.candidateIntervalId);
   }
 
   private setState(state: CALL_STATE) {
@@ -106,21 +96,28 @@ export class WebRTCService {
     };
   }
 
-  private async handleAnswerCall(callOffer: CallOffer) {
-    const { sdp, callType, peerId, callId } = callOffer;
+  async onCallAccepted(callId: string, peerId: string) {
+    console.log('Pending call::', this.pendingCallData);
+    if (!this.pendingCallData || this.pendingCallData.callId !== callId) {
+      this.webRtcLog.warn('No pending call to accept');
+      return;
+    }
+
+    const { sdp, callType } = this.pendingCallData;
+
     try {
       this.callType = callType;
-      // this.setState(CALL_STATE.CONNECTING);
+      this.setState(CALL_STATE.CONNECTING);
       InCallManager.start({ media: callType });
 
       await this.createLocalStream();
       const pc = this.createPeer(peerId, callId);
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
 
+      await this.flushCandidates();
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-
-      this.peerConnection = pc;
 
       socket.sendSignal({
         to: peerId,
@@ -135,28 +132,6 @@ export class WebRTCService {
       this.webRtcLog.error('Failed to accept call', error);
       this.safeCleanup('failed');
     }
-  }
-
-  async onCallAccepted(callId: string, peerId: string) {
-    console.log('Call ID::', callId);
-    this.currentCallId = callId;
-    this.setState(CALL_STATE.CONNECTING);
-    if (!this.pendingCallData || this.pendingCallData.callId !== callId) {
-      this.webRtcLog.warn('No pending call to accept');
-
-      const intervalId = setInterval(() => {
-        const callOffer = this.pendingCallData;
-
-        if (callOffer) {
-          this.handleAnswerCall(callOffer);
-          clearInterval(intervalId);
-        }
-      }, 2000);
-
-      return;
-    }
-
-    this.handleAnswerCall(this.pendingCallData);
   }
 
   public onRemoteStreamChange(callback: (stream: MediaStream) => void) {
@@ -362,16 +337,46 @@ export class WebRTCService {
     return false;
   }
 
-  async handleOffer(
-    callId: string,
-    peerId: string,
-    sdp: any,
-    callType: CallType,
-  ) {
-    const callOffer = { callId, peerId, sdp, callType };
-    this.pendingCallData = callOffer;
+  // async handleOffer(
+  //   callId: string,
+  //   peerId: string,
+  //   sdp: any,
+  //   callType: CallType,
+  // ) {
+  //   this.pendingCallData = { callId, peerId, sdp, callType };
+  //   this.setState(CALL_STATE.RINGING);
+  // }
 
-    this.setState(CALL_STATE.RINGING);
+  async handleOffer(callId: string, peerId: string, sdp: any, type: CallType) {
+    try {
+      this.callType = type;
+      this.setState(CALL_STATE.CONNECTING);
+      InCallManager.start({ media: type });
+
+      await this.createLocalStream();
+
+      const pc = this.createPeer(peerId, callId);
+
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      await this.flushCandidates();
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socket.sendSignal({
+        to: peerId,
+        from: this.getMyUserId(),
+        callId,
+        type: 'answer',
+        sdp: answer,
+      });
+
+      return true;
+    } catch (error) {
+      this.webRtcLog.error('Failed to handle offer', error);
+      this.safeCleanup('failed');
+      return false;
+    }
   }
 
   async handleAnswer(callId: string, sdp: any) {
@@ -389,40 +394,37 @@ export class WebRTCService {
     try {
       this.lastProcessedAnswer = fingerprint;
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      if (this.candidate) await pc.addIceCandidate(this.candidate);
+      await this.flushCandidates();
     } catch (error) {
       this.webRtcLog.error('Failed to handle answer', error);
     }
   }
 
   async handleCandidate(callId: string, candidate: any) {
-    console.log('Loading candidate', this.currentCallId, callId);
-    if (!candidate) return;
+    if (!candidate || this.currentCallId !== callId) return;
 
     const pc = this.peerConnection;
     const ice = new RTCIceCandidate(candidate);
 
-    console.log('PC::', pc);
-
     if (!pc || !pc.remoteDescription) {
-      this.candidate = ice;
-      console.log('Setting candidate::', ice);
-      const intervalId = setInterval(async () => {
-        const candidate = ice;
-        const pc = this.peerConnection;
-        if (pc && pc.remoteDescription) {
-          await pc.addIceCandidate(candidate);
-          clearInterval(intervalId);
-        }
-      }, 2000);
+      this.pendingCandidates.push(ice);
       return;
     }
 
     try {
-      console.log('Candidate added..');
       await pc.addIceCandidate(ice);
     } catch (error) {
       this.webRtcLog.error('ICE candidate error', error);
+    }
+  }
+
+  private async flushCandidates() {
+    const pc = this.peerConnection;
+    if (!pc || !pc.remoteDescription) return;
+
+    while (this.pendingCandidates.length > 0) {
+      const candidate = this.pendingCandidates.shift();
+      if (candidate) await pc.addIceCandidate(candidate);
     }
   }
 
@@ -510,18 +512,8 @@ export class WebRTCService {
 
     this.closePeerConnection(reason);
 
-    this.emitter.off('call-offer', () => {});
-
-    clearInterval(this.candidateIntervalId);
-
     this.localStream?.getTracks().forEach(track => track.stop());
     this.localStream = null;
-
-    this.pendingCallData = null;
-
-    this.candidate = null;
-
-    this.currentCallId = null;
 
     this.resetCallData();
     this.setState(CALL_STATE.ENDED);

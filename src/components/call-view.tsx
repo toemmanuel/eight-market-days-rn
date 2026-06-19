@@ -51,8 +51,6 @@ export default function CallView({ user, callData }: CallViewProps) {
 
   const hasSwitchToVideoRef = useRef<boolean>(false);
 
-  const timerStartedRef = useRef(false);
-
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
@@ -99,6 +97,9 @@ export default function CallView({ user, callData }: CallViewProps) {
       startTimeRef.current = null;
 
       if (connectionStatus === 'ended' || connectionStatus === 'failed') {
+        setTimeout(() => {
+          onEndCall();
+        }, 2000);
         setCallDuration(0);
       }
     }

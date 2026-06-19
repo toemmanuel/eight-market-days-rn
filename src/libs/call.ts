@@ -293,7 +293,7 @@ class CallKeep {
       }
 
       await RNCallKeep.setup(options);
-      await new Promise<void>(resolve => setTimeout(() => resolve(), 1200));
+      await new Promise<void>(resolve => setTimeout(() => resolve(), 1000));
 
       const phoneAccountEnabled = await RNCallKeep.checkPhoneAccountEnabled();
       if (!phoneAccountEnabled) {
@@ -339,7 +339,7 @@ class CallKeep {
         this.callKeepLogger.log('Call timeout, cancelling:', callId);
         this.cancelIncomingCall(callId);
       }
-    }, 30000);
+    }, 60000);
   }
 
   stopRingtone() {
