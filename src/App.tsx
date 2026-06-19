@@ -7,7 +7,6 @@
 
 import { useEffect } from 'react';
 import { StatusBar, useColorScheme } from 'react-native';
-import notifee, { EventType } from '@notifee/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { call, callKeep, notification, socket } from './libs';
 import {
@@ -25,35 +24,6 @@ function App() {
   const isDarkMode = useColorScheme() === 'dark';
 
   const navigationRef = createNavigationContainerRef();
-
-  // notifee.onForegroundEvent(({ type, detail }) => {
-  //   if (type === EventType.ACTION_PRESS) {
-  //     const { pressAction, notification } = detail;
-  //     const data = notification?.data;
-
-  //     console.log('Data::', data);
-  //     console.log('Notification::', notification);
-
-  //     if (pressAction?.id === 'answer') {
-  //       socket.acceptCall({ callId: data?.callId as string });
-
-  //       // open call screen
-  //       navigationRef.navigate('Callee', {
-  //         callData: data,
-  //       });
-
-  //       notifee.cancelNotification(notification?.id as string);
-  //     }
-
-  //     if (pressAction?.id === 'decline') {
-  //       console.log('Call declined');
-
-  //       socket.endCall(data?.callId as string);
-
-  //       notification.cancelNotification(notification?.id as string);
-  //     }
-  //   }
-  // });
 
   return (
     <NavigationContainer linking={linking} ref={navigationRef}>
@@ -78,9 +48,9 @@ function AppContent() {
 
   useEffect(() => {
     socket.navigation = navigation;
+    callKeep.navigation = navigation as any;
     setTimeout(async () => {
       await call.init();
-      callKeep.navigation = navigation as any;
       await requestNotificationAndStoreToken();
     }, 1000);
   }, []);

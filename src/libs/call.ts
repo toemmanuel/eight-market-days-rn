@@ -406,10 +406,10 @@ class Call {
     });
   }
 
-  initiateCall(payload: InitiateCallPayload) {
+  async initiateCall(payload: InitiateCallPayload) {
     this.callType = payload.callType;
+    await socket.initiateCall(payload);
     callKeep.startCall(payload);
-    socket.initiateCall(payload);
   }
 
   acceptCall(callId: string) {

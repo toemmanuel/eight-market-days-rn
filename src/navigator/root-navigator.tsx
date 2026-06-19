@@ -9,6 +9,7 @@ export default function RootNavigator() {
     <Navigator
       screenOptions={{
         headerShown: false,
+        animation: 'none',
       }}
     >
       <Screen name="Init" component={InitScreen} />
