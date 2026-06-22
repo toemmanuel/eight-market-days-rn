@@ -510,8 +510,6 @@ export class WebRTCService {
 
     this.closePeerConnection(reason);
 
-    this.emitter.off('call-offer', () => {});
-
     clearInterval(this.candidateIntervalId);
 
     this.localStream?.getTracks().forEach(track => track.stop());
